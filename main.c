@@ -22,13 +22,7 @@
  */
 
 #define _DEFAULT_SOURCE
-#ifndef WIN32
 #include <unistd.h>
-#endif
-#ifdef __MINGW32__
-/* allow the definition of popen, etc */
-#undef __STRICT_ANSI__
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,9 +40,6 @@ static LILCALLBACK void do_exit(lil_t lil, lil_value_t val)
 
 static char *do_system(size_t argc, char **argv)
 {
-#if defined(WIN32) || defined(WATCOMC)
-	return NULL;
-#else
 	char *cmd = NULL;
 	int cmdlen = 0;
 	size_t i;
@@ -84,7 +75,6 @@ static char *do_system(size_t argc, char **argv)
 	} else {
 		return NULL;
 	}
-#endif
 }
 
 static LILCALLBACK lil_value_t fnc_writechar(lil_t lil, size_t argc,

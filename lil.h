@@ -42,34 +42,13 @@
 
 #define LIL_EMBED_NOFLAGS 0x0000
 
-#if defined(LILDLL) && (defined(WIN32) || defined(_WIN32))
-#ifdef __LIL_C_FILE__
-#define LILAPI __declspec(dllexport __stdcall)
-#else
-#define LILAPI __declspec(dllimport __stdcall)
-#endif
-#define LILCALLBACK __declspec(__stdcall)
-#else
 #define LILAPI
 #define LILCALLBACK
-#endif
 
-#ifdef LILINT_LONGLONG
-typedef long long int lilint_t;
-#define LILINT_PRINTF "%lli"
-#else
-#ifdef LILINT_INT64
-typedef __int64 lilint_t;
-#define LILINT_PRINTF "%I64i"
-#else
-#ifndef LILINT_CUSTOM
 #include <stdint.h>
 #include <inttypes.h>
 typedef int64_t lilint_t;
 #define LILINT_PRINTF "%" PRIi64
-#endif
-#endif
-#endif
 
 typedef struct _lil_value_t *lil_value_t;
 typedef struct _lil_func_t *lil_func_t;

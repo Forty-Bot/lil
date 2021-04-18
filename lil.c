@@ -21,7 +21,6 @@
  * Kostas Michalopoulos <badsector@runtimelegend.com>
  */
 
-#define __LIL_C_FILE__
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -39,13 +38,6 @@
 /*#define LIL_ENABLE_RECLIMIT 10000*/
 
 /* Visual C++ does not have atoll (Pelles C does and thinks it is fully MSVC compatible) */
-#if defined(_MSC_VER) && !defined(__POCC__)
-#define atoll _atoi64
-/* disable warning about unsafe standard C calls */
-#pragma warning(disable : 4996)
-/* disable float/int conversion warnings */
-#pragma warning(disable : 4244)
-#endif
 
 #define ERROR_NOERROR 0
 #define ERROR_DEFAULT 1
@@ -564,19 +556,7 @@ void lil_free_env(lil_env_t env)
 
 static lil_var_t lil_find_local_var(lil_t lil, lil_env_t env, const char *name)
 {
-#if 0
-    if (env->vars > 0) {
-        size_t i = env->vars - 1;
-        while (1) {
-            if (!strcmp(env->var[i]->n, name)) return env->var[i];
-            if (!i) break;
-            i--;
-        }
-    }
-    return NULL;
-#else
 	return hm_get(&env->varmap, name);
-#endif
 }
 
 static lil_var_t lil_find_var(lil_t lil, lil_env_t env, const char *name)
@@ -590,19 +570,7 @@ static lil_var_t lil_find_var(lil_t lil, lil_env_t env, const char *name)
 
 static lil_func_t find_cmd(lil_t lil, const char *name)
 {
-#if 0
-    if (lil->cmds > 0) {
-        size_t i = lil->cmds - 1;
-        while (1) {
-            if (!strcmp(lil->cmd[i]->name, name)) return lil->cmd[i];
-            if (!i) break;
-            i--;
-        }
-    }
-    return NULL;
-#else
 	return hm_get(&lil->cmdmap, name);
-#endif
 }
 
 static lil_func_t add_func(lil_t lil, const char *name)
