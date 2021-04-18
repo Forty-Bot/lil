@@ -26,6 +26,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <unistd.h>
 #include "lil.h"
 
 /* Enable pools for reusing values, lists and environments. This will use more memory and
@@ -64,7 +65,7 @@ typedef struct _hashmap_t {
 	struct hashcell_t cell[HASHMAP_CELLS];
 } hashmap_t;
 
-struct _lil_value_t {
+struct lil_value {
 	size_t l;
 #ifdef LIL_ENABLE_POOLS
 	size_t c;
@@ -72,55 +73,55 @@ struct _lil_value_t {
 	char *d;
 };
 
-struct _lil_var_t {
+struct lil_var {
 	char *n;
 	char *w;
-	struct _lil_env_t *env;
-	lil_value_t v;
+	struct lil_env *env;
+	struct lil_value *v;
 };
 
-struct _lil_env_t {
-	struct _lil_env_t *parent;
-	lil_func_t func;
-	lil_value_t catcher_for;
-	lil_var_t *var;
+struct lil_env {
+	struct lil_env *parent;
+	struct lil_func *func;
+	struct lil_value *catcher_for;
+	struct lil_var **var;
 	size_t vars;
 	hashmap_t varmap;
-	lil_value_t retval;
+	struct lil_value *retval;
 	int retval_set;
 	int breakrun;
 };
 
-struct _lil_list_t {
-	lil_value_t *v;
+struct lil_list {
+	struct lil_value **v;
 	size_t c;
 	size_t cap;
 };
 
-struct _lil_func_t {
+struct lil_func {
 	char *name;
-	lil_value_t code;
-	lil_list_t argnames;
+	struct lil_value *code;
+	struct lil_list *argnames;
 	lil_func_proc_t proc;
 };
 
-struct _lil_t {
+struct lil {
 	const char *code; /* need save on parse */
 	const char *rootcode;
 	size_t clen; /* need save on parse */
 	size_t head; /* need save on parse */
 	int ignoreeol;
-	lil_func_t *cmd;
+	struct lil_func **cmd;
 	size_t cmds;
 	size_t syscmds;
 	hashmap_t cmdmap;
 	char *catcher;
 	int in_catcher;
 	char *dollarprefix;
-	lil_env_t env;
-	lil_env_t rootenv;
-	lil_env_t downenv;
-	lil_value_t empty;
+	struct lil_env *env;
+	struct lil_env *rootenv;
+	struct lil_env *downenv;
+	struct lil_value *empty;
 	int error;
 	size_t err_head;
 	char *err_msg;
@@ -134,21 +135,21 @@ struct _lil_t {
 typedef struct _expreval_t {
 	const char *code;
 	size_t len, head;
-	lilint_t ival;
+	ssize_t ival;
 	double dval;
 	int type;
 	int error;
 } expreval_t;
 
-static lil_value_t next_word(lil_t lil);
-static void register_stdcmds(lil_t lil);
+static struct lil_value *next_word(struct lil *lil);
+static void register_stdcmds(struct lil *lil);
 
 #ifdef LIL_ENABLE_POOLS
-static lil_value_t *pool;
+static struct lil_value **pool;
 static int poolsize, poolcap;
-static lil_list_t *listpool;
+static struct lil_list **listpool;
 static size_t listpoolsize, listpoolcap;
-static lil_env_t *envpool;
+static struct lil_env **envpool;
 static size_t envpoolsize, envpoolcap;
 #endif
 
@@ -222,27 +223,27 @@ static int hm_has(hashmap_t *hm, const char *key)
 }
 
 #ifdef LIL_ENABLE_POOLS
-static lil_value_t alloc_from_pool(void)
+static struct lil_value *alloc_from_pool(void)
 {
 	if (poolsize > 0) {
 		poolsize--;
 		return pool[poolsize];
 	} else {
-		lil_value_t val = calloc(1, sizeof(struct _lil_value_t));
+		struct lil_value *val = calloc(1, sizeof(struct lil_value));
 		return val;
 	}
 }
 
-static void release_to_pool(lil_value_t val)
+static void release_to_pool(struct lil_value *val)
 {
 	if (poolsize == poolcap) {
 		poolcap = poolcap ? (poolcap + poolcap / 2) : 64;
-		pool = realloc(pool, sizeof(lil_value_t) * poolcap);
+		pool = realloc(pool, sizeof(struct lil_value *) * poolcap);
 	}
 	pool[poolsize++] = val;
 }
 
-static void ensure_capacity(lil_value_t val, size_t cap)
+static void ensure_capacity(struct lil_value *val, size_t cap)
 {
 	if (val->c < cap) {
 		val->c = cap + 128;
@@ -251,12 +252,12 @@ static void ensure_capacity(lil_value_t val, size_t cap)
 }
 #endif
 
-static lil_value_t alloc_value_len(const char *str, size_t len)
+static struct lil_value *alloc_value_len(const char *str, size_t len)
 {
 #ifdef LIL_ENABLE_POOLS
-	lil_value_t val = alloc_from_pool();
+	struct lil_value *val = alloc_from_pool();
 #else
-	lil_value_t val = calloc(1, sizeof(struct _lil_value_t));
+	struct lil_value *val = calloc(1, sizeof(struct lil_value));
 #endif
 	if (!val)
 		return NULL;
@@ -285,20 +286,20 @@ static lil_value_t alloc_value_len(const char *str, size_t len)
 	return val;
 }
 
-static lil_value_t alloc_value(const char *str)
+static struct lil_value *alloc_value(const char *str)
 {
 	return alloc_value_len(str, str ? strlen(str) : 0);
 }
 
-lil_value_t lil_clone_value(lil_value_t src)
+struct lil_value *lil_clone_value(struct lil_value *src)
 {
-	lil_value_t val;
+	struct lil_value *val;
 	if (!src)
 		return NULL;
 #ifdef LIL_ENABLE_POOLS
 	val = alloc_from_pool();
 #else
-	val = calloc(1, sizeof(struct _lil_value_t));
+	val = calloc(1, sizeof(struct lil_value));
 #endif
 	if (!val)
 		return NULL;
@@ -325,7 +326,7 @@ lil_value_t lil_clone_value(lil_value_t src)
 	return val;
 }
 
-int lil_append_char(lil_value_t val, char ch)
+int lil_append_char(struct lil_value *val, char ch)
 {
 #ifdef LIL_ENABLE_POOLS
 	ensure_capacity(val, val->l + 2);
@@ -342,7 +343,7 @@ int lil_append_char(lil_value_t val, char ch)
 	return 1;
 }
 
-int lil_append_string_len(lil_value_t val, const char *s, size_t len)
+int lil_append_string_len(struct lil_value *val, const char *s, size_t len)
 {
 #ifndef LIL_ENABLE_POOLS
 	char *new;
@@ -363,12 +364,12 @@ int lil_append_string_len(lil_value_t val, const char *s, size_t len)
 	return 1;
 }
 
-int lil_append_string(lil_value_t val, const char *s)
+int lil_append_string(struct lil_value *val, const char *s)
 {
 	return lil_append_string_len(val, s, strlen(s));
 }
 
-int lil_append_val(lil_value_t val, lil_value_t v)
+int lil_append_val(struct lil_value *val, struct lil_value *v)
 {
 #ifndef LIL_ENABLE_POOLS
 	char *new;
@@ -389,7 +390,7 @@ int lil_append_val(lil_value_t val, lil_value_t v)
 	return 1;
 }
 
-void lil_free_value(lil_value_t val)
+void lil_free_value(struct lil_value *val)
 {
 	if (!val)
 		return;
@@ -401,19 +402,19 @@ void lil_free_value(lil_value_t val)
 #endif
 }
 
-lil_list_t lil_alloc_list(void)
+struct lil_list *lil_alloc_list(void)
 {
-	lil_list_t list;
+	struct lil_list *list;
 #ifdef LIL_ENABLE_POOLS
 	if (listpoolsize > 0)
 		return listpool[--listpoolsize];
 #endif
-	list = calloc(1, sizeof(struct _lil_list_t));
+	list = calloc(1, sizeof(struct lil_list));
 	list->v = NULL;
 	return list;
 }
 
-void lil_free_list(lil_list_t list)
+void lil_free_list(struct lil_list *list)
 {
 	size_t i;
 	if (!list)
@@ -425,7 +426,8 @@ void lil_free_list(lil_list_t list)
 	if (listpoolsize == listpoolcap) {
 		listpoolcap =
 			listpoolcap ? (listpoolcap + listpoolcap / 2) : 32;
-		listpool = realloc(listpool, sizeof(lil_list_t) * listpoolcap);
+		listpool = realloc(listpool,
+				   sizeof(struct lil_list *) * listpoolcap);
 	}
 	listpool[listpoolsize++] = list;
 #else
@@ -434,11 +436,12 @@ void lil_free_list(lil_list_t list)
 #endif
 }
 
-void lil_list_append(lil_list_t list, lil_value_t val)
+void lil_list_append(struct lil_list *list, struct lil_value *val)
 {
 	if (list->c == list->cap) {
 		size_t cap = list->cap ? (list->cap + list->cap / 2) : 32;
-		lil_value_t *nv = realloc(list->v, sizeof(lil_value_t) * cap);
+		struct lil_value **nv =
+			realloc(list->v, sizeof(struct lil_value *) * cap);
 		if (!nv)
 			return;
 		list->cap = cap;
@@ -447,12 +450,12 @@ void lil_list_append(lil_list_t list, lil_value_t val)
 	list->v[list->c++] = val;
 }
 
-size_t lil_list_size(lil_list_t list)
+size_t lil_list_size(struct lil_list *list)
 {
 	return list->c;
 }
 
-lil_value_t lil_list_get(lil_list_t list, size_t index)
+struct lil_value *lil_list_get(struct lil_list *list, size_t index)
 {
 	return index >= list->c ? NULL : list->v[index];
 }
@@ -468,9 +471,9 @@ static int needs_escape(const char *str)
 	return 0;
 }
 
-lil_value_t lil_list_to_value(lil_list_t list, int do_escape)
+struct lil_value *lil_list_to_value(struct lil_list *list, int do_escape)
 {
-	lil_value_t val = alloc_value(NULL);
+	struct lil_value *val = alloc_value(NULL);
 	size_t i, j;
 	for (i = 0; i < list->c; i++) {
 		int escape =
@@ -494,9 +497,9 @@ lil_value_t lil_list_to_value(lil_list_t list, int do_escape)
 	return val;
 }
 
-lil_env_t lil_alloc_env(lil_env_t parent)
+struct lil_env *lil_alloc_env(struct lil_env *parent)
 {
-	lil_env_t env;
+	struct lil_env *env;
 #ifdef LIL_ENABLE_POOLS
 	if (envpoolsize > 0) {
 		size_t i, j;
@@ -517,12 +520,12 @@ lil_env_t lil_alloc_env(lil_env_t parent)
 		return env;
 	}
 #endif
-	env = calloc(1, sizeof(struct _lil_env_t));
+	env = calloc(1, sizeof(struct lil_env));
 	env->parent = parent;
 	return env;
 }
 
-void lil_free_env(lil_env_t env)
+void lil_free_env(struct lil_env *env)
 {
 	size_t i;
 	if (!env)
@@ -538,7 +541,8 @@ void lil_free_env(lil_env_t env)
 	free(env->var);
 	if (envpoolsize == envpoolcap) {
 		envpoolcap = envpoolcap ? (envpoolcap + envpoolcap / 2) : 64;
-		envpool = realloc(envpool, sizeof(lil_env_t) * envpoolcap);
+		envpool =
+			realloc(envpool, sizeof(struct lil_env *) * envpoolcap);
 	}
 	envpool[envpoolsize++] = env;
 #else
@@ -554,29 +558,31 @@ void lil_free_env(lil_env_t env)
 #endif
 }
 
-static lil_var_t lil_find_local_var(lil_t lil, lil_env_t env, const char *name)
+static struct lil_var *lil_find_local_var(struct lil *lil, struct lil_env *env,
+					  const char *name)
 {
 	return hm_get(&env->varmap, name);
 }
 
-static lil_var_t lil_find_var(lil_t lil, lil_env_t env, const char *name)
+static struct lil_var *lil_find_var(struct lil *lil, struct lil_env *env,
+				    const char *name)
 {
-	lil_var_t r = lil_find_local_var(lil, env, name);
+	struct lil_var *r = lil_find_local_var(lil, env, name);
 	return r ? r :
 			 (env == lil->rootenv ?
 				  NULL :
 				  lil_find_var(lil, lil->rootenv, name));
 }
 
-static lil_func_t find_cmd(lil_t lil, const char *name)
+static struct lil_func *find_cmd(struct lil *lil, const char *name)
 {
 	return hm_get(&lil->cmdmap, name);
 }
 
-static lil_func_t add_func(lil_t lil, const char *name)
+static struct lil_func *add_func(struct lil *lil, const char *name)
 {
-	lil_func_t cmd;
-	lil_func_t *ncmd;
+	struct lil_func *cmd;
+	struct lil_func **ncmd;
 	cmd = find_cmd(lil, name);
 	if (cmd) {
 		if (cmd->argnames)
@@ -587,9 +593,9 @@ static lil_func_t add_func(lil_t lil, const char *name)
 		cmd->proc = NULL;
 		return cmd;
 	}
-	cmd = calloc(1, sizeof(struct _lil_func_t));
+	cmd = calloc(1, sizeof(struct lil_func));
 	cmd->name = strclone(name);
-	ncmd = realloc(lil->cmd, sizeof(lil_func_t) * (lil->cmds + 1));
+	ncmd = realloc(lil->cmd, sizeof(struct lil_func *) * (lil->cmds + 1));
 	if (!ncmd) {
 		free(cmd);
 		return NULL;
@@ -600,7 +606,7 @@ static lil_func_t add_func(lil_t lil, const char *name)
 	return cmd;
 }
 
-static void del_func(lil_t lil, lil_func_t cmd)
+static void del_func(struct lil *lil, struct lil_func *cmd)
 {
 	size_t i, index = lil->cmds;
 	for (i = 0; i < lil->cmds; i++)
@@ -621,24 +627,26 @@ static void del_func(lil_t lil, lil_func_t cmd)
 		lil->cmd[i] = lil->cmd[i + 1];
 }
 
-int lil_register(lil_t lil, const char *name, lil_func_proc_t proc)
+int lil_register(struct lil *lil, const char *name, lil_func_proc_t proc)
 {
-	lil_func_t cmd = add_func(lil, name);
+	struct lil_func *cmd = add_func(lil, name);
 	if (!cmd)
 		return 0;
 	cmd->proc = proc;
 	return 1;
 }
 
-lil_var_t lil_set_var(lil_t lil, const char *name, lil_value_t val, int local)
+struct lil_var *lil_set_var(struct lil *lil, const char *name,
+			    struct lil_value *val, int local)
 {
-	lil_var_t *nvar;
-	lil_env_t env = local == LIL_SETVAR_GLOBAL ? lil->rootenv : lil->env;
+	struct lil_var **nvar;
+	struct lil_env *env =
+		local == LIL_SETVAR_GLOBAL ? lil->rootenv : lil->env;
 	int freeval = 0;
 	if (!name[0])
 		return NULL;
 	if (local != LIL_SETVAR_LOCAL_NEW) {
-		lil_var_t var = lil_find_var(lil, env, name);
+		struct lil_var *var = lil_find_var(lil, env, name);
 		if (local == LIL_SETVAR_LOCAL_ONLY && var &&
 		    var->env == lil->rootenv && var->env != env)
 			var = NULL;
@@ -648,7 +656,7 @@ lil_var_t lil_set_var(lil_t lil, const char *name, lil_value_t val, int local)
 			lil_setvar_callback_proc_t proc =
 				(lil_setvar_callback_proc_t)
 					lil->callback[LIL_CALLBACK_SETVAR];
-			lil_value_t newval = val;
+			struct lil_value *newval = val;
 			int r = proc(lil, name, &newval);
 			if (r < 0)
 				return NULL;
@@ -661,7 +669,7 @@ lil_var_t lil_set_var(lil_t lil, const char *name, lil_value_t val, int local)
 			lil_free_value(var->v);
 			var->v = freeval ? val : lil_clone_value(val);
 			if (var->w) {
-				lil_env_t save_env;
+				struct lil_env *save_env;
 				save_env = lil->env;
 				lil->env = var->env;
 				lil_free_value(lil_parse(lil, var->w, 0, 1));
@@ -671,13 +679,13 @@ lil_var_t lil_set_var(lil_t lil, const char *name, lil_value_t val, int local)
 		}
 	}
 
-	nvar = realloc(env->var, sizeof(lil_var_t) * (env->vars + 1));
+	nvar = realloc(env->var, sizeof(struct lil_var *) * (env->vars + 1));
 	if (!nvar) {
 		/* TODO: report memory error */
 		return NULL;
 	}
 	env->var = nvar;
-	nvar[env->vars] = calloc(1, sizeof(struct _lil_var_t));
+	nvar[env->vars] = calloc(1, sizeof(struct lil_var));
 	nvar[env->vars]->n = strclone(name);
 	nvar[env->vars]->w = NULL;
 	nvar[env->vars]->env = env;
@@ -686,46 +694,47 @@ lil_var_t lil_set_var(lil_t lil, const char *name, lil_value_t val, int local)
 	return nvar[env->vars++];
 }
 
-lil_value_t lil_get_var(lil_t lil, const char *name)
+struct lil_value *lil_get_var(struct lil *lil, const char *name)
 {
 	return lil_get_var_or(lil, name, lil->empty);
 }
 
-lil_value_t lil_get_var_or(lil_t lil, const char *name, lil_value_t defvalue)
+struct lil_value *lil_get_var_or(struct lil *lil, const char *name,
+				 struct lil_value *defvalue)
 {
-	lil_var_t var = lil_find_var(lil, lil->env, name);
-	lil_value_t retval = var ? var->v : defvalue;
+	struct lil_var *var = lil_find_var(lil, lil->env, name);
+	struct lil_value *retval = var ? var->v : defvalue;
 	if (lil->callback[LIL_CALLBACK_GETVAR] &&
 	    (!var || var->env == lil->rootenv)) {
 		lil_getvar_callback_proc_t proc =
 			(lil_getvar_callback_proc_t)
 				lil->callback[LIL_CALLBACK_GETVAR];
-		lil_value_t newretval = retval;
+		struct lil_value *newretval = retval;
 		if (proc(lil, name, &newretval))
 			retval = newretval;
 	}
 	return retval;
 }
 
-lil_env_t lil_push_env(lil_t lil)
+struct lil_env *lil_push_env(struct lil *lil)
 {
-	lil_env_t env = lil_alloc_env(lil->env);
+	struct lil_env *env = lil_alloc_env(lil->env);
 	lil->env = env;
 	return env;
 }
 
-void lil_pop_env(lil_t lil)
+void lil_pop_env(struct lil *lil)
 {
 	if (lil->env->parent) {
-		lil_env_t next = lil->env->parent;
+		struct lil_env *next = lil->env->parent;
 		lil_free_env(lil->env);
 		lil->env = next;
 	}
 }
 
-lil_t lil_new(void)
+struct lil *lil_new(void)
 {
-	lil_t lil = calloc(1, sizeof(struct _lil_t));
+	struct lil *lil = calloc(1, sizeof(struct lil));
 	lil->rootenv = lil->env = lil_alloc_env(NULL);
 	lil->empty = alloc_value(NULL);
 	lil->dollarprefix = strclone("set ");
@@ -745,12 +754,12 @@ static int eolchar(char ch)
 	return ch == '\n' || ch == '\r' || ch == ';';
 }
 
-static int ateol(lil_t lil)
+static int ateol(struct lil *lil)
 {
 	return !(lil->ignoreeol) && eolchar(lil->code[lil->head]);
 }
 
-static void skip_spaces(lil_t lil)
+static void skip_spaces(struct lil *lil)
 {
 	while (lil->head < lil->clen) {
 		if (lil->code[lil->head] == '#') {
@@ -789,12 +798,12 @@ static void skip_spaces(lil_t lil)
 	}
 }
 
-static lil_value_t get_bracketpart(lil_t lil)
+static struct lil_value *get_bracketpart(struct lil *lil)
 {
 	size_t cnt = 1;
 	int save_eol = lil->ignoreeol;
 	lil->ignoreeol = 0;
-	lil_value_t val, cmd = alloc_value(NULL);
+	struct lil_value *val, *cmd = alloc_value(NULL);
 	lil->head++;
 	while (lil->head < lil->clen) {
 		if (lil->code[lil->head] == '[') {
@@ -817,9 +826,9 @@ static lil_value_t get_bracketpart(lil_t lil)
 	return val;
 }
 
-static lil_value_t get_dollarpart(lil_t lil)
+static struct lil_value *get_dollarpart(struct lil *lil)
 {
-	lil_value_t val, name, tmp;
+	struct lil_value *val, *name, *tmp;
 	lil->head++;
 	name = next_word(lil);
 	tmp = alloc_value(lil->dollarprefix);
@@ -830,9 +839,9 @@ static lil_value_t get_dollarpart(lil_t lil)
 	return val;
 }
 
-static lil_value_t next_word(lil_t lil)
+static struct lil_value *next_word(struct lil *lil)
 {
-	lil_value_t val;
+	struct lil_value *val;
 	size_t start;
 	skip_spaces(lil);
 	if (lil->code[lil->head] == '$') {
@@ -865,9 +874,10 @@ static lil_value_t next_word(lil_t lil)
 		while (lil->head < lil->clen) {
 			if (lil->code[lil->head] == '[' ||
 			    lil->code[lil->head] == '$') {
-				lil_value_t tmp = lil->code[lil->head] == '$' ?
-								get_dollarpart(lil) :
-								get_bracketpart(lil);
+				struct lil_value *tmp =
+					lil->code[lil->head] == '$' ?
+						      get_dollarpart(lil) :
+						      get_bracketpart(lil);
 				lil_append_val(val, tmp);
 				lil_free_value(tmp);
 				lil->head--; /* avoid skipping the char below */
@@ -929,16 +939,16 @@ static lil_value_t next_word(lil_t lil)
 	return val ? val : alloc_value(NULL);
 }
 
-static lil_list_t substitute(lil_t lil)
+static struct lil_list *substitute(struct lil *lil)
 {
-	lil_list_t words = lil_alloc_list();
+	struct lil_list *words = lil_alloc_list();
 
 	skip_spaces(lil);
 	while (lil->head < lil->clen && !ateol(lil) && !lil->error) {
-		lil_value_t w = alloc_value(NULL);
+		struct lil_value *w = alloc_value(NULL);
 		do {
 			size_t head = lil->head;
-			lil_value_t wp = next_word(lil);
+			struct lil_value *wp = next_word(lil);
 			if (head ==
 			    lil->head) { /* something wrong, the parser can't proceed */
 				lil_free_value(w);
@@ -959,13 +969,13 @@ static lil_list_t substitute(lil_t lil)
 	return words;
 }
 
-lil_list_t lil_subst_to_list(lil_t lil, lil_value_t code)
+struct lil_list *lil_subst_to_list(struct lil *lil, struct lil_value *code)
 {
 	const char *save_code = lil->code;
 	size_t save_clen = lil->clen;
 	size_t save_head = lil->head;
 	int save_igeol = lil->ignoreeol;
-	lil_list_t words;
+	struct lil_list *words;
 	lil->code = lil_to_string(code);
 	lil->clen = code->l;
 	lil->head = 0;
@@ -980,23 +990,23 @@ lil_list_t lil_subst_to_list(lil_t lil, lil_value_t code)
 	return words;
 }
 
-lil_value_t lil_subst_to_value(lil_t lil, lil_value_t code)
+struct lil_value *lil_subst_to_value(struct lil *lil, struct lil_value *code)
 {
-	lil_list_t words = lil_subst_to_list(lil, code);
-	lil_value_t val;
+	struct lil_list *words = lil_subst_to_list(lil, code);
+	struct lil_value *val;
 	val = lil_list_to_value(words, 0);
 	lil_free_list(words);
 	return val;
 }
 
-lil_value_t lil_parse(lil_t lil, const char *code, size_t codelen,
-		      int funclevel)
+struct lil_value *lil_parse(struct lil *lil, const char *code, size_t codelen,
+			    int funclevel)
 {
 	const char *save_code = lil->code;
 	size_t save_clen = lil->clen;
 	size_t save_head = lil->head;
-	lil_value_t val = NULL;
-	lil_list_t words = NULL;
+	struct lil_value *val = NULL;
+	struct lil_list *words = NULL;
 	if (!save_code)
 		lil->rootcode = code;
 	lil->code = code;
@@ -1026,14 +1036,14 @@ lil_value_t lil_parse(lil_t lil, const char *code, size_t codelen,
 			goto cleanup;
 
 		if (words->c) {
-			lil_func_t cmd =
+			struct lil_func *cmd =
 				find_cmd(lil, lil_to_string(words->v[0]));
 			if (!cmd) {
 				if (words->v[0]->l) {
 					if (lil->catcher) {
 						if (lil->in_catcher <
 						    MAX_CATCHER_DEPTH) {
-							lil_value_t args;
+							struct lil_value *args;
 							lil->in_catcher++;
 							lil_push_env(lil);
 							lil->env->catcher_for =
@@ -1093,7 +1103,7 @@ lil_value_t lil_parse(lil_t lil, const char *code, size_t codelen,
 					    !strcmp(lil_to_string(
 							    cmd->argnames->v[0]),
 						    "args")) {
-						lil_value_t args =
+						struct lil_value *args =
 							lil_list_to_value(words,
 									  1);
 						lil_set_var(
@@ -1157,18 +1167,19 @@ cleanup:
 	return val ? val : alloc_value(NULL);
 }
 
-lil_value_t lil_parse_value(lil_t lil, lil_value_t val, int funclevel)
+struct lil_value *lil_parse_value(struct lil *lil, struct lil_value *val,
+				  int funclevel)
 {
 	if (!val || !val->d || !val->l)
 		return alloc_value(NULL);
 	return lil_parse(lil, val->d, val->l, funclevel);
 }
 
-lil_value_t lil_call(lil_t lil, const char *funcname, size_t argc,
-		     lil_value_t *argv)
+struct lil_value *lil_call(struct lil *lil, const char *funcname, size_t argc,
+			   struct lil_value **argv)
 {
-	lil_func_t cmd = find_cmd(lil, funcname);
-	lil_value_t r = NULL;
+	struct lil_func *cmd = find_cmd(lil, funcname);
+	struct lil_value *r = NULL;
 	if (cmd) {
 		if (cmd->proc)
 			r = cmd->proc(lil, argc, argv);
@@ -1179,8 +1190,8 @@ lil_value_t lil_call(lil_t lil, const char *funcname, size_t argc,
 			if (cmd->argnames->c == 1 &&
 			    !strcmp(lil_to_string(cmd->argnames->v[0]),
 				    "args")) {
-				lil_list_t args = lil_alloc_list();
-				lil_value_t argsval;
+				struct lil_list *args = lil_alloc_list();
+				struct lil_value *argsval;
 				for (i = 0; i < argc; i++)
 					lil_list_append(
 						args, lil_clone_value(argv[i]));
@@ -1205,14 +1216,14 @@ lil_value_t lil_call(lil_t lil, const char *funcname, size_t argc,
 	return r;
 }
 
-void lil_callback(lil_t lil, int cb, lil_callback_proc_t proc)
+void lil_callback(struct lil *lil, int cb, lil_callback_proc_t proc)
 {
 	if (cb < 0 || cb > CALLBACKS)
 		return;
 	lil->callback[cb] = proc;
 }
 
-void lil_set_error(lil_t lil, const char *msg)
+void lil_set_error(struct lil *lil, const char *msg)
 {
 	if (lil->error)
 		return;
@@ -1222,7 +1233,7 @@ void lil_set_error(lil_t lil, const char *msg)
 	lil->err_msg = strclone(msg ? msg : "");
 }
 
-void lil_set_error_at(lil_t lil, size_t pos, const char *msg)
+void lil_set_error_at(struct lil *lil, size_t pos, const char *msg)
 {
 	if (lil->error)
 		return;
@@ -1232,7 +1243,7 @@ void lil_set_error_at(lil_t lil, size_t pos, const char *msg)
 	lil->err_msg = strclone(msg ? msg : "");
 }
 
-int lil_error(lil_t lil, const char **msg, size_t *pos)
+int lil_error(struct lil *lil, const char **msg, size_t *pos)
 {
 	if (!lil->error)
 		return 0;
@@ -1266,7 +1277,7 @@ static void ee_skip_spaces(expreval_t *ee)
 
 static void ee_numeric_element(expreval_t *ee)
 {
-	lilint_t fpart = 0, fpartlen = 1;
+	ssize_t fpart = 0, fpartlen = 1;
 	ee->type = EE_INT;
 	ee_skip_spaces(ee);
 	ee->ival = 0;
@@ -1351,7 +1362,7 @@ static void ee_unary(expreval_t *ee)
 		case '~':
 			switch (ee->type) {
 			case EE_FLOAT:
-				ee->ival = ~((lilint_t)ee->dval);
+				ee->ival = ~((ssize_t)ee->dval);
 				ee->type = EE_INT;
 				break;
 			case EE_INT:
@@ -1392,7 +1403,7 @@ static void ee_muldiv(expreval_t *ee)
 	       (ee->code[ee->head] == '*' || ee->code[ee->head] == '/' ||
 		ee->code[ee->head] == '\\' || ee->code[ee->head] == '%')) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 
 		switch (ee->code[ee->head]) {
 		case '*':
@@ -1576,8 +1587,8 @@ static void ee_muldiv(expreval_t *ee)
 						ee->error =
 							EERR_DIVISION_BY_ZERO;
 					} else {
-						ee->ival = (lilint_t)(odval /
-								      ee->dval);
+						ee->ival = (ssize_t)(odval /
+								     ee->dval);
 					}
 					ee->type = EE_INT;
 					break;
@@ -1586,7 +1597,7 @@ static void ee_muldiv(expreval_t *ee)
 						ee->error =
 							EERR_DIVISION_BY_ZERO;
 					} else {
-						ee->ival = (lilint_t)(
+						ee->ival = (ssize_t)(
 							odval /
 							(double)ee->ival);
 					}
@@ -1607,7 +1618,7 @@ static void ee_muldiv(expreval_t *ee)
 						ee->error =
 							EERR_DIVISION_BY_ZERO;
 					} else {
-						ee->ival = (lilint_t)(
+						ee->ival = (ssize_t)(
 							(double)oival /
 							ee->dval);
 					}
@@ -1645,7 +1656,7 @@ static void ee_addsub(expreval_t *ee)
 	       !ee_invalidpunct(ee->code[ee->head + 1]) &&
 	       (ee->code[ee->head] == '+' || ee->code[ee->head] == '-')) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 
 		switch (ee->code[ee->head]) {
 		case '+':
@@ -1748,7 +1759,7 @@ static void ee_shift(expreval_t *ee)
 	       ((ee->code[ee->head] == '<' && ee->code[ee->head + 1] == '<') ||
 		(ee->code[ee->head] == '>' && ee->code[ee->head + 1] == '>'))) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 		ee->head++;
 
 		switch (ee->code[ee->head]) {
@@ -1761,12 +1772,12 @@ static void ee_shift(expreval_t *ee)
 					return;
 				switch (ee->type) {
 				case EE_FLOAT:
-					ee->ival = (lilint_t)odval
-						   << (lilint_t)ee->dval;
+					ee->ival = (ssize_t)odval
+						   << (ssize_t)ee->dval;
 					ee->type = EE_INT;
 					break;
 				case EE_INT:
-					ee->ival = (lilint_t)odval << ee->ival;
+					ee->ival = (ssize_t)odval << ee->ival;
 					break;
 				default:
 					ee->error = EERR_INVALID_TYPE;
@@ -1780,7 +1791,7 @@ static void ee_shift(expreval_t *ee)
 					return;
 				switch (ee->type) {
 				case EE_FLOAT:
-					ee->ival = oival << (lilint_t)ee->dval;
+					ee->ival = oival << (ssize_t)ee->dval;
 					ee->type = EE_INT;
 					break;
 				case EE_INT:
@@ -1805,12 +1816,12 @@ static void ee_shift(expreval_t *ee)
 					return;
 				switch (ee->type) {
 				case EE_FLOAT:
-					ee->ival = (lilint_t)odval >>
-						   (lilint_t)ee->dval;
+					ee->ival = (ssize_t)odval >>
+						   (ssize_t)ee->dval;
 					ee->type = EE_INT;
 					break;
 				case EE_INT:
-					ee->ival = (lilint_t)odval >> ee->ival;
+					ee->ival = (ssize_t)odval >> ee->ival;
 					break;
 				default:
 					ee->error = EERR_INVALID_TYPE;
@@ -1824,7 +1835,7 @@ static void ee_shift(expreval_t *ee)
 					return;
 				switch (ee->type) {
 				case EE_FLOAT:
-					ee->ival = oival >> (lilint_t)ee->dval;
+					ee->ival = oival >> (ssize_t)ee->dval;
 					ee->type = EE_INT;
 					break;
 				case EE_INT:
@@ -1858,7 +1869,7 @@ static void ee_compare(expreval_t *ee)
 		(ee->code[ee->head] == '<' && ee->code[ee->head + 1] == '=') ||
 		(ee->code[ee->head] == '>' && ee->code[ee->head + 1] == '='))) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 		int op = 4;
 		if (ee->code[ee->head] == '<' &&
 		    !ee_invalidpunct(ee->code[ee->head + 1]))
@@ -2051,7 +2062,7 @@ static void ee_equals(expreval_t *ee)
 	       ((ee->code[ee->head] == '=' && ee->code[ee->head + 1] == '=') ||
 		(ee->code[ee->head] == '!' && ee->code[ee->head + 1] == '='))) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 		int op = ee->code[ee->head] == '=' ? 1 : 2;
 		ee->head += 2;
 
@@ -2152,7 +2163,7 @@ static void ee_bitand(expreval_t *ee)
 	       (ee->code[ee->head] == '&' &&
 		!ee_invalidpunct(ee->code[ee->head + 1]))) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 		ee->head++;
 
 		switch (ee->type) {
@@ -2162,11 +2173,11 @@ static void ee_bitand(expreval_t *ee)
 				return;
 			switch (ee->type) {
 			case EE_FLOAT:
-				ee->ival = (lilint_t)odval & (lilint_t)ee->dval;
+				ee->ival = (ssize_t)odval & (ssize_t)ee->dval;
 				ee->type = EE_INT;
 				break;
 			case EE_INT:
-				ee->ival = (lilint_t)odval & ee->ival;
+				ee->ival = (ssize_t)odval & ee->ival;
 				break;
 			default:
 				ee->error = EERR_INVALID_TYPE;
@@ -2179,7 +2190,7 @@ static void ee_bitand(expreval_t *ee)
 				return;
 			switch (ee->type) {
 			case EE_FLOAT:
-				ee->ival = oival & (lilint_t)ee->dval;
+				ee->ival = oival & (ssize_t)ee->dval;
 				ee->type = EE_INT;
 				break;
 			case EE_INT:
@@ -2207,7 +2218,7 @@ static void ee_bitor(expreval_t *ee)
 	       (ee->code[ee->head] == '|' &&
 		!ee_invalidpunct(ee->code[ee->head + 1]))) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 		ee->head++;
 
 		switch (ee->type) {
@@ -2217,11 +2228,11 @@ static void ee_bitor(expreval_t *ee)
 				return;
 			switch (ee->type) {
 			case EE_FLOAT:
-				ee->ival = (lilint_t)odval | (lilint_t)ee->dval;
+				ee->ival = (ssize_t)odval | (ssize_t)ee->dval;
 				ee->type = EE_INT;
 				break;
 			case EE_INT:
-				ee->ival = (lilint_t)odval | ee->ival;
+				ee->ival = (ssize_t)odval | ee->ival;
 				break;
 			default:
 				ee->error = EERR_INVALID_TYPE;
@@ -2234,7 +2245,7 @@ static void ee_bitor(expreval_t *ee)
 				return;
 			switch (ee->type) {
 			case EE_FLOAT:
-				ee->ival = oival | (lilint_t)ee->dval;
+				ee->ival = oival | (ssize_t)ee->dval;
 				ee->type = EE_INT;
 				break;
 			case EE_INT:
@@ -2261,7 +2272,7 @@ static void ee_logand(expreval_t *ee)
 	while (ee->head < ee->len && !ee->error &&
 	       (ee->code[ee->head] == '&' && ee->code[ee->head + 1] == '&')) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 		ee->head += 2;
 
 		switch (ee->type) {
@@ -2315,7 +2326,7 @@ static void ee_logor(expreval_t *ee)
 	while (ee->head < ee->len && !ee->error &&
 	       (ee->code[ee->head] == '|' && ee->code[ee->head + 1] == '|')) {
 		double odval = ee->dval;
-		lilint_t oival = ee->ival;
+		ssize_t oival = ee->ival;
 		ee->head += 2;
 
 		switch (ee->type) {
@@ -2373,7 +2384,7 @@ static void ee_expr(expreval_t *ee)
 	}
 }
 
-lil_value_t lil_eval_expr(lil_t lil, lil_value_t code)
+struct lil_value *lil_eval_expr(struct lil *lil, struct lil_value *code)
 {
 	expreval_t ee;
 	code = lil_subst_to_value(lil, code);
@@ -2415,10 +2426,10 @@ lil_value_t lil_eval_expr(lil_t lil, lil_value_t code)
 		return lil_alloc_double(ee.dval);
 }
 
-lil_value_t lil_unused_name(lil_t lil, const char *part)
+struct lil_value *lil_unused_name(struct lil *lil, const char *part)
 {
 	char *name = malloc(strlen(part) + 64);
-	lil_value_t val;
+	struct lil_value *val;
 	size_t i;
 	for (i = 0; i < (size_t)-1; i++) {
 		sprintf(name, "!!un!%s!%09u!nu!!", part, (unsigned int)i);
@@ -2433,27 +2444,27 @@ lil_value_t lil_unused_name(lil_t lil, const char *part)
 	return NULL;
 }
 
-lil_value_t lil_arg(lil_value_t *argv, size_t index)
+struct lil_value *lil_arg(struct lil_value **argv, size_t index)
 {
 	return argv ? argv[index] : NULL;
 }
 
-const char *lil_to_string(lil_value_t val)
+const char *lil_to_string(struct lil_value *val)
 {
 	return (val && val->l) ? val->d : "";
 }
 
-double lil_to_double(lil_value_t val)
+double lil_to_double(struct lil_value *val)
 {
 	return atof(lil_to_string(val));
 }
 
-lilint_t lil_to_integer(lil_value_t val)
+ssize_t lil_to_integer(struct lil_value *val)
 {
-	return (lilint_t)atoll(lil_to_string(val));
+	return (ssize_t)atoll(lil_to_string(val));
 }
 
-int lil_to_boolean(lil_value_t val)
+int lil_to_boolean(struct lil_value *val)
 {
 	const char *s = lil_to_string(val);
 	size_t i, dots = 0;
@@ -2472,31 +2483,31 @@ int lil_to_boolean(lil_value_t val)
 	return 0;
 }
 
-lil_value_t lil_alloc_string(const char *str)
+struct lil_value *lil_alloc_string(const char *str)
 {
 	return alloc_value(str);
 }
 
-lil_value_t lil_alloc_string_len(const char *str, size_t len)
+struct lil_value *lil_alloc_string_len(const char *str, size_t len)
 {
 	return alloc_value_len(str, len);
 }
 
-lil_value_t lil_alloc_double(double num)
+struct lil_value *lil_alloc_double(double num)
 {
 	char buff[128];
 	sprintf(buff, "%f", num);
 	return alloc_value(buff);
 }
 
-lil_value_t lil_alloc_integer(lilint_t num)
+struct lil_value *lil_alloc_integer(ssize_t num)
 {
 	char buff[128];
 	sprintf(buff, LILINT_PRINTF, num);
 	return alloc_value(buff);
 }
 
-void lil_free(lil_t lil)
+void lil_free(struct lil *lil)
 {
 	size_t i;
 	if (!lil)
@@ -2504,7 +2515,7 @@ void lil_free(lil_t lil)
 	free(lil->err_msg);
 	lil_free_value(lil->empty);
 	while (lil->env) {
-		lil_env_t next = lil->env->parent;
+		struct lil_env *next = lil->env->parent;
 		lil_free_env(lil->env);
 		lil->env = next;
 	}
@@ -2522,17 +2533,17 @@ void lil_free(lil_t lil)
 	free(lil);
 }
 
-void lil_set_data(lil_t lil, void *data)
+void lil_set_data(struct lil *lil, void *data)
 {
 	lil->data = data;
 }
 
-void *lil_get_data(lil_t lil)
+void *lil_get_data(struct lil *lil)
 {
 	return lil->data;
 }
 
-static void fnc_embed_write(lil_t lil, const char *msg)
+static void fnc_embed_write(struct lil *lil, const char *msg)
 {
 	size_t len = strlen(msg) + 1;
 	lil->embed = realloc(lil->embed, lil->embedlen + len);
@@ -2540,7 +2551,7 @@ static void fnc_embed_write(lil_t lil, const char *msg)
 	lil->embedlen += len - 1;
 }
 
-char *lil_embedded(lil_t lil, const char *code, unsigned int flags)
+char *lil_embedded(struct lil *lil, const char *code, unsigned int flags)
 {
 	char *prev_embed = lil->embed;
 	size_t prev_embedlen = lil->embedlen;
@@ -2632,7 +2643,7 @@ void lil_freemem(void *ptr)
 	free(ptr);
 }
 
-void lil_write(lil_t lil, const char *msg)
+void lil_write(struct lil *lil, const char *msg)
 {
 	if (lil->callback[LIL_CALLBACK_WRITE]) {
 		lil_write_callback_proc_t proc =
@@ -2643,12 +2654,13 @@ void lil_write(lil_t lil, const char *msg)
 		printf("%s", msg);
 }
 
-static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_reflect(struct lil *lil, size_t argc,
+				     struct lil_value **argv)
 {
-	lil_func_t func;
+	struct lil_func *func;
 	const char *type;
 	size_t i;
-	lil_value_t r;
+	struct lil_value *r;
 	if (!argc)
 		return NULL;
 	type = lil_to_string(argv[0]);
@@ -2675,7 +2687,7 @@ static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
 		return lil_alloc_integer(lil->cmds);
 	}
 	if (!strcmp(type, "funcs")) {
-		lil_list_t funcs = lil_alloc_list();
+		struct lil_list *funcs = lil_alloc_list();
 		for (i = 0; i < lil->cmds; i++)
 			lil_list_append(funcs,
 					lil_alloc_string(lil->cmd[i]->name));
@@ -2684,8 +2696,8 @@ static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
 		return r;
 	}
 	if (!strcmp(type, "vars")) {
-		lil_list_t vars = lil_alloc_list();
-		lil_env_t env = lil->env;
+		struct lil_list *vars = lil_alloc_list();
+		struct lil_env *env = lil->env;
 		while (env) {
 			for (i = 0; i < env->vars; i++)
 				lil_list_append(
@@ -2697,7 +2709,7 @@ static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
 		return r;
 	}
 	if (!strcmp(type, "globals")) {
-		lil_list_t vars = lil_alloc_list();
+		struct lil_list *vars = lil_alloc_list();
 		for (i = 0; i < lil->rootenv->vars; i++)
 			lil_list_append(vars, lil_alloc_string(
 						      lil->rootenv->var[i]->n));
@@ -2715,7 +2727,7 @@ static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
 	}
 	if (!strcmp(type, "has-var")) {
 		const char *target;
-		lil_env_t env = lil->env;
+		struct lil_env *env = lil->env;
 		if (argc == 1)
 			return NULL;
 		target = lil_to_string(argv[1]);
@@ -2740,7 +2752,7 @@ static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
 		return lil->err_msg ? lil_alloc_string(lil->err_msg) : NULL;
 	}
 	if (!strcmp(type, "dollar-prefix")) {
-		lil_value_t r;
+		struct lil_value *r;
 		if (argc == 1)
 			return lil_alloc_string(lil->dollarprefix);
 		r = lil_alloc_string(lil->dollarprefix);
@@ -2749,7 +2761,7 @@ static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
 		return r;
 	}
 	if (!strcmp(type, "this")) {
-		lil_env_t env = lil->env;
+		struct lil_env *env = lil->env;
 		while (env != lil->rootenv && !env->catcher_for && !env->func)
 			env = env->parent;
 		if (env->catcher_for)
@@ -2759,7 +2771,7 @@ static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
 		return env->func ? env->func->code : NULL;
 	}
 	if (!strcmp(type, "name")) {
-		lil_env_t env = lil->env;
+		struct lil_env *env = lil->env;
 		while (env != lil->rootenv && !env->catcher_for && !env->func)
 			env = env->parent;
 		if (env->catcher_for)
@@ -2771,11 +2783,12 @@ static lil_value_t fnc_reflect(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t fnc_func(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_func(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
-	lil_value_t name;
-	lil_func_t cmd;
-	lil_list_t fargs;
+	struct lil_value *name;
+	struct lil_func *cmd;
+	struct lil_list *fargs;
 	if (argc < 1)
 		return NULL;
 	if (argc >= 3) {
@@ -2787,7 +2800,7 @@ static lil_value_t fnc_func(lil_t lil, size_t argc, lil_value_t *argv)
 	} else {
 		name = lil_unused_name(lil, "anonymous-function");
 		if (argc < 2) {
-			lil_value_t tmp = lil_alloc_string("args");
+			struct lil_value *tmp = lil_alloc_string("args");
 			fargs = lil_subst_to_list(lil, tmp);
 			lil_free_value(tmp);
 			cmd = add_func(lil, lil_to_string(name));
@@ -2803,10 +2816,11 @@ static lil_value_t fnc_func(lil_t lil, size_t argc, lil_value_t *argv)
 	return name;
 }
 
-static lil_value_t fnc_rename(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_rename(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
-	lil_value_t r;
-	lil_func_t func;
+	struct lil_value *r;
+	struct lil_func *func;
 	const char *oldname;
 	const char *newname;
 	if (argc < 2)
@@ -2833,15 +2847,17 @@ static lil_value_t fnc_rename(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_unusedname(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_unusedname(struct lil *lil, size_t argc,
+					struct lil_value **argv)
 {
 	return lil_unused_name(lil, argc > 0 ? lil_to_string(argv[0]) :
 						     "unusedname");
 }
 
-static lil_value_t fnc_quote(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_quote(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
-	lil_value_t r;
+	struct lil_value *r;
 	size_t i;
 	if (argc < 1)
 		return NULL;
@@ -2854,10 +2870,11 @@ static lil_value_t fnc_quote(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_set(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_set(struct lil *lil, size_t argc,
+				 struct lil_value **argv)
 {
 	size_t i = 0;
-	lil_var_t var = NULL;
+	struct lil_var *var = NULL;
 	int access = LIL_SETVAR_LOCAL;
 	if (!argc)
 		return NULL;
@@ -2876,7 +2893,8 @@ static lil_value_t fnc_set(lil_t lil, size_t argc, lil_value_t *argv)
 	return var ? lil_clone_value(var->v) : NULL;
 }
 
-static lil_value_t fnc_local(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_local(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	size_t i;
 	for (i = 0; i < argc; i++) {
@@ -2888,10 +2906,11 @@ static lil_value_t fnc_local(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t fnc_write(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_write(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	size_t i;
-	lil_value_t msg = lil_alloc_string(NULL);
+	struct lil_value *msg = lil_alloc_string(NULL);
 	for (i = 0; i < argc; i++) {
 		if (i)
 			lil_append_char(msg, ' ');
@@ -2902,19 +2921,21 @@ static lil_value_t fnc_write(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t fnc_print(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_print(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	fnc_write(lil, argc, argv);
 	lil_write(lil, "\n");
 	return NULL;
 }
 
-static lil_value_t fnc_eval(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_eval(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
 	if (argc == 1)
 		return lil_parse_value(lil, argv[0], 0);
 	if (argc > 1) {
-		lil_value_t val = alloc_value(NULL), r;
+		struct lil_value *val = alloc_value(NULL), *r;
 		size_t i;
 		for (i = 0; i < argc; i++) {
 			if (i)
@@ -2928,11 +2949,12 @@ static lil_value_t fnc_eval(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t fnc_topeval(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_topeval(struct lil *lil, size_t argc,
+				     struct lil_value **argv)
 {
-	lil_env_t thisenv = lil->env;
-	lil_env_t thisdownenv = lil->downenv;
-	lil_value_t r;
+	struct lil_env *thisenv = lil->env;
+	struct lil_env *thisdownenv = lil->downenv;
+	struct lil_value *r;
 	lil->env = lil->rootenv;
 	lil->downenv = thisenv;
 	r = fnc_eval(lil, argc, argv);
@@ -2941,11 +2963,12 @@ static lil_value_t fnc_topeval(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_upeval(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_upeval(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
-	lil_env_t thisenv = lil->env;
-	lil_env_t thisdownenv = lil->downenv;
-	lil_value_t r;
+	struct lil_env *thisenv = lil->env;
+	struct lil_env *thisdownenv = lil->downenv;
+	struct lil_value *r;
 	if (lil->rootenv == thisenv)
 		return fnc_eval(lil, argc, argv);
 	lil->env = thisenv->parent;
@@ -2956,11 +2979,12 @@ static lil_value_t fnc_upeval(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_downeval(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_downeval(struct lil *lil, size_t argc,
+				      struct lil_value **argv)
 {
-	lil_value_t r;
-	lil_env_t upenv = lil->env;
-	lil_env_t downenv = lil->downenv;
+	struct lil_value *r;
+	struct lil_env *upenv = lil->env;
+	struct lil_env *downenv = lil->downenv;
 	if (!downenv)
 		return fnc_eval(lil, argc, argv);
 	lil->downenv = NULL;
@@ -2971,12 +2995,13 @@ static lil_value_t fnc_downeval(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_enveval(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_enveval(struct lil *lil, size_t argc,
+				     struct lil_value **argv)
 {
-	lil_value_t r;
-	lil_list_t invars = NULL;
-	lil_list_t outvars = NULL;
-	lil_value_t *varvalues = NULL;
+	struct lil_value *r;
+	struct lil_list *invars = NULL;
+	struct lil_list *outvars = NULL;
+	struct lil_value **varvalues = NULL;
 	int codeindex;
 	size_t i;
 	if (argc < 1)
@@ -2985,7 +3010,8 @@ static lil_value_t fnc_enveval(lil_t lil, size_t argc, lil_value_t *argv)
 		codeindex = 0;
 	else if (argc >= 2) {
 		invars = lil_subst_to_list(lil, argv[0]);
-		varvalues = malloc(sizeof(lil_value_t) * lil_list_size(invars));
+		varvalues = malloc(sizeof(struct lil_value *) *
+				   lil_list_size(invars));
 		for (i = 0; i < lil_list_size(invars); i++)
 			varvalues[i] = lil_clone_value(lil_get_var(
 				lil, lil_to_string(lil_list_get(invars, i))));
@@ -3008,7 +3034,7 @@ static lil_value_t fnc_enveval(lil_t lil, size_t argc, lil_value_t *argv)
 	if (invars || outvars) {
 		if (outvars) {
 			varvalues = realloc(varvalues,
-					    sizeof(lil_value_t) *
+					    sizeof(struct lil_value *) *
 						    lil_list_size(outvars));
 			for (i = 0; i < lil_list_size(outvars); i++)
 				varvalues[i] = lil_clone_value(lil_get_var(
@@ -3048,11 +3074,12 @@ static lil_value_t fnc_enveval(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_jaileval(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_jaileval(struct lil *lil, size_t argc,
+				      struct lil_value **argv)
 {
 	size_t i;
-	lil_t sublil;
-	lil_value_t r;
+	struct lil *sublil;
+	struct lil_value *r;
 	size_t base = 0;
 	if (!argc)
 		return NULL;
@@ -3064,7 +3091,7 @@ static lil_value_t fnc_jaileval(lil_t lil, size_t argc, lil_value_t *argv)
 	sublil = lil_new();
 	if (base != 1) {
 		for (i = lil->syscmds; i < lil->cmds; i++) {
-			lil_func_t fnc = lil->cmd[i];
+			struct lil_func *fnc = lil->cmd[i];
 			if (!fnc->proc)
 				continue;
 			lil_register(sublil, fnc->name, fnc->proc);
@@ -3075,9 +3102,10 @@ static lil_value_t fnc_jaileval(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_count(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_count(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
-	lil_list_t list;
+	struct lil_list *list;
 	char buff[64];
 	if (!argc)
 		return alloc_value("0");
@@ -3087,11 +3115,12 @@ static lil_value_t fnc_count(lil_t lil, size_t argc, lil_value_t *argv)
 	return alloc_value(buff);
 }
 
-static lil_value_t fnc_index(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_index(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
-	lil_list_t list;
+	struct lil_list *list;
 	size_t index;
-	lil_value_t r;
+	struct lil_value *r;
 	if (argc < 2)
 		return NULL;
 	list = lil_subst_to_list(lil, argv[0]);
@@ -3104,11 +3133,12 @@ static lil_value_t fnc_index(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_indexof(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_indexof(struct lil *lil, size_t argc,
+				     struct lil_value **argv)
 {
-	lil_list_t list;
+	struct lil_list *list;
 	size_t index;
-	lil_value_t r = NULL;
+	struct lil_value *r = NULL;
 	if (argc < 2)
 		return NULL;
 	list = lil_subst_to_list(lil, argv[0]);
@@ -3122,10 +3152,11 @@ static lil_value_t fnc_indexof(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_append(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_append(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
-	lil_list_t list;
-	lil_value_t r;
+	struct lil_list *list;
+	struct lil_value *r;
 	size_t i, base = 1;
 	int access = LIL_SETVAR_LOCAL;
 	const char *varname;
@@ -3148,12 +3179,13 @@ static lil_value_t fnc_append(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_slice(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_slice(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
-	lil_list_t list, slice;
+	struct lil_list *list, *slice;
 	size_t i;
-	lilint_t from, to;
-	lil_value_t r;
+	ssize_t from, to;
+	struct lil_value *r;
 	if (argc < 1)
 		return NULL;
 	if (argc < 2)
@@ -3162,8 +3194,8 @@ static lil_value_t fnc_slice(lil_t lil, size_t argc, lil_value_t *argv)
 	if (from < 0)
 		from = 0;
 	list = lil_subst_to_list(lil, argv[0]);
-	to = argc > 2 ? lil_to_integer(argv[2]) : (lilint_t)list->c;
-	if (to > (lilint_t)list->c)
+	to = argc > 2 ? lil_to_integer(argv[2]) : (ssize_t)list->c;
+	if (to > (ssize_t)list->c)
 		to = list->c;
 	if (to < from)
 		to = from;
@@ -3176,11 +3208,12 @@ static lil_value_t fnc_slice(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_filter(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_filter(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
-	lil_list_t list, filtered;
+	struct lil_list *list, *filtered;
 	size_t i;
-	lil_value_t r;
+	struct lil_value *r;
 	const char *varname = "x";
 	int base = 0;
 	if (argc < 1)
@@ -3206,10 +3239,11 @@ static lil_value_t fnc_filter(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_list(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_list(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
-	lil_list_t list = lil_alloc_list();
-	lil_value_t r;
+	struct lil_list *list = lil_alloc_list();
+	struct lil_value *r;
 	size_t i;
 	for (i = 0; i < argc; i++)
 		lil_list_append(list, lil_clone_value(argv[i]));
@@ -3218,17 +3252,19 @@ static lil_value_t fnc_list(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_subst(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_subst(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	if (argc < 1)
 		return NULL;
 	return lil_subst_to_value(lil, argv[0]);
 }
 
-static lil_value_t fnc_concat(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_concat(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
-	lil_list_t list;
-	lil_value_t r, tmp;
+	struct lil_list *list;
+	struct lil_value *r, *tmp;
 	size_t i;
 	if (argc < 1)
 		return NULL;
@@ -3243,10 +3279,11 @@ static lil_value_t fnc_concat(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_foreach(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_foreach(struct lil *lil, size_t argc,
+				     struct lil_value **argv)
 {
-	lil_list_t list, rlist;
-	lil_value_t r;
+	struct lil_list *list, *rlist;
+	struct lil_value *r;
 	size_t i, listidx = 0, codeidx = 1;
 	const char *varname = "i";
 	if (argc < 2)
@@ -3259,7 +3296,7 @@ static lil_value_t fnc_foreach(lil_t lil, size_t argc, lil_value_t *argv)
 	rlist = lil_alloc_list();
 	list = lil_subst_to_list(lil, argv[listidx]);
 	for (i = 0; i < list->c; i++) {
-		lil_value_t rv;
+		struct lil_value *rv;
 		lil_set_var(lil, varname, list->v[i], LIL_SETVAR_LOCAL_ONLY);
 		rv = lil_parse_value(lil, argv[codeidx], 0);
 		if (rv->l)
@@ -3275,7 +3312,8 @@ static lil_value_t fnc_foreach(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_return(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_return(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	lil->env->breakrun = 1;
 	lil_free_value(lil->env->retval);
@@ -3284,7 +3322,8 @@ static lil_value_t fnc_return(lil_t lil, size_t argc, lil_value_t *argv)
 	return argc < 1 ? NULL : lil_clone_value(argv[0]);
 }
 
-static lil_value_t fnc_result(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_result(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	if (argc > 0) {
 		lil_free_value(lil->env->retval);
@@ -3294,12 +3333,13 @@ static lil_value_t fnc_result(lil_t lil, size_t argc, lil_value_t *argv)
 	return lil->env->retval_set ? lil_clone_value(lil->env->retval) : NULL;
 }
 
-static lil_value_t fnc_expr(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_expr(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
 	if (argc == 1)
 		return lil_eval_expr(lil, argv[0]);
 	if (argc > 1) {
-		lil_value_t val = alloc_value(NULL), r;
+		struct lil_value *val = alloc_value(NULL), *r;
 		size_t i;
 		for (i = 0; i < argc; i++) {
 			if (i)
@@ -3313,19 +3353,20 @@ static lil_value_t fnc_expr(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t real_inc(lil_t lil, const char *varname, float v)
+static struct lil_value *real_inc(struct lil *lil, const char *varname, float v)
 {
-	lil_value_t pv = lil_get_var(lil, varname);
+	struct lil_value *pv = lil_get_var(lil, varname);
 	double dv = lil_to_double(pv) + v;
 	if (fmod(dv, 1))
 		pv = lil_alloc_double(dv);
 	else
-		pv = lil_alloc_integer((lilint_t)dv);
+		pv = lil_alloc_integer((ssize_t)dv);
 	lil_set_var(lil, varname, pv, LIL_SETVAR_LOCAL);
 	return pv;
 }
 
-static lil_value_t fnc_inc(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_inc(struct lil *lil, size_t argc,
+				 struct lil_value **argv)
 {
 	if (argc < 1)
 		return NULL;
@@ -3333,7 +3374,8 @@ static lil_value_t fnc_inc(lil_t lil, size_t argc, lil_value_t *argv)
 			argc > 1 ? lil_to_double(argv[1]) : 1);
 }
 
-static lil_value_t fnc_dec(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_dec(struct lil *lil, size_t argc,
+				 struct lil_value **argv)
 {
 	if (argc < 1)
 		return NULL;
@@ -3341,12 +3383,13 @@ static lil_value_t fnc_dec(lil_t lil, size_t argc, lil_value_t *argv)
 			-(argc > 1 ? lil_to_double(argv[1]) : 1));
 }
 
-static lil_value_t fnc_read(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_read(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
 	FILE *f;
 	size_t size;
 	char *buffer;
-	lil_value_t r;
+	struct lil_value *r;
 	if (argc < 1)
 		return NULL;
 	if (lil->callback[LIL_CALLBACK_READ]) {
@@ -3371,7 +3414,8 @@ static lil_value_t fnc_read(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_store(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_store(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	FILE *f;
 	const char *buffer;
@@ -3393,9 +3437,10 @@ static lil_value_t fnc_store(lil_t lil, size_t argc, lil_value_t *argv)
 	return lil_clone_value(argv[1]);
 }
 
-static lil_value_t fnc_if(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_if(struct lil *lil, size_t argc,
+				struct lil_value **argv)
 {
-	lil_value_t val, r = NULL;
+	struct lil_value *val, *r = NULL;
 	int base = 0, not = 0, v;
 	if (argc < 1)
 		return NULL;
@@ -3418,9 +3463,10 @@ static lil_value_t fnc_if(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_while(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_while(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
-	lil_value_t val, r = NULL;
+	struct lil_value *val, *r = NULL;
 	int base = 0, not = 0, v;
 	if (argc < 1)
 		return NULL;
@@ -3447,9 +3493,10 @@ static lil_value_t fnc_while(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_for(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_for(struct lil *lil, size_t argc,
+				 struct lil_value **argv)
 {
-	lil_value_t val, r = NULL;
+	struct lil_value *val, *r = NULL;
 	if (argc < 4)
 		return NULL;
 	lil_free_value(lil_parse_value(lil, argv[0], 0));
@@ -3470,7 +3517,8 @@ static lil_value_t fnc_for(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_char(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_char(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
 	char s[2];
 	if (!argc)
@@ -3480,7 +3528,8 @@ static lil_value_t fnc_char(lil_t lil, size_t argc, lil_value_t *argv)
 	return lil_alloc_string(s);
 }
 
-static lil_value_t fnc_charat(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_charat(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	size_t index;
 	char chstr[2];
@@ -3496,7 +3545,8 @@ static lil_value_t fnc_charat(lil_t lil, size_t argc, lil_value_t *argv)
 	return lil_alloc_string(chstr);
 }
 
-static lil_value_t fnc_codeat(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_codeat(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	size_t index;
 	const char *str;
@@ -3509,10 +3559,11 @@ static lil_value_t fnc_codeat(lil_t lil, size_t argc, lil_value_t *argv)
 	return lil_alloc_integer(str[index]);
 }
 
-static lil_value_t fnc_substr(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_substr(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	const char *str;
-	lil_value_t r;
+	struct lil_value *r;
 	size_t start, end, i, slen;
 	if (argc < 2)
 		return NULL;
@@ -3532,7 +3583,8 @@ static lil_value_t fnc_substr(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_strpos(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_strpos(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	const char *hay;
 	const char *str;
@@ -3551,7 +3603,8 @@ static lil_value_t fnc_strpos(lil_t lil, size_t argc, lil_value_t *argv)
 	return lil_alloc_integer(str - hay);
 }
 
-static lil_value_t fnc_length(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_length(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	size_t i, total = 0;
 	for (i = 0; i < argc; i++) {
@@ -3559,14 +3612,14 @@ static lil_value_t fnc_length(lil_t lil, size_t argc, lil_value_t *argv)
 			total++;
 		total += strlen(lil_to_string(argv[i]));
 	}
-	return lil_alloc_integer((lilint_t)total);
+	return lil_alloc_integer((ssize_t)total);
 }
 
-static lil_value_t real_trim(const char *str, const char *chars, int left,
-			     int right)
+static struct lil_value *real_trim(const char *str, const char *chars, int left,
+				   int right)
 {
 	int base = 0;
-	lil_value_t r = NULL;
+	struct lil_value *r = NULL;
 	if (left) {
 		while (str[base] && strchr(chars, str[base]))
 			base++;
@@ -3587,7 +3640,8 @@ static lil_value_t real_trim(const char *str, const char *chars, int left,
 	return r;
 }
 
-static lil_value_t fnc_trim(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_trim(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
 	if (!argc)
 		return NULL;
@@ -3596,7 +3650,8 @@ static lil_value_t fnc_trim(lil_t lil, size_t argc, lil_value_t *argv)
 			 1);
 }
 
-static lil_value_t fnc_ltrim(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_ltrim(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	if (!argc)
 		return NULL;
@@ -3605,7 +3660,8 @@ static lil_value_t fnc_ltrim(lil_t lil, size_t argc, lil_value_t *argv)
 			 0);
 }
 
-static lil_value_t fnc_rtrim(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_rtrim(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	if (!argc)
 		return NULL;
@@ -3614,7 +3670,8 @@ static lil_value_t fnc_rtrim(lil_t lil, size_t argc, lil_value_t *argv)
 			 1);
 }
 
-static lil_value_t fnc_strcmp(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_strcmp(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	if (argc < 2)
 		return NULL;
@@ -3622,7 +3679,8 @@ static lil_value_t fnc_strcmp(lil_t lil, size_t argc, lil_value_t *argv)
 		strcmp(lil_to_string(argv[0]), lil_to_string(argv[1])));
 }
 
-static lil_value_t fnc_streq(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_streq(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	if (argc < 2)
 		return NULL;
@@ -3630,7 +3688,8 @@ static lil_value_t fnc_streq(lil_t lil, size_t argc, lil_value_t *argv)
 		strcmp(lil_to_string(argv[0]), lil_to_string(argv[1])) ? 0 : 1);
 }
 
-static lil_value_t fnc_repstr(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_repstr(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	const char *from;
 	const char *to;
@@ -3640,7 +3699,7 @@ static lil_value_t fnc_repstr(lil_t lil, size_t argc, lil_value_t *argv)
 	size_t fromlen;
 	size_t tolen;
 	size_t srclen;
-	lil_value_t r;
+	struct lil_value *r;
 	if (argc < 1)
 		return NULL;
 	if (argc < 3)
@@ -3671,12 +3730,13 @@ static lil_value_t fnc_repstr(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_split(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_split(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
-	lil_list_t list;
+	struct lil_list *list;
 	const char *sep = " ";
 	size_t i;
-	lil_value_t val;
+	struct lil_value *val;
 	const char *str;
 	if (argc == 0)
 		return NULL;
@@ -3702,9 +3762,10 @@ static lil_value_t fnc_split(lil_t lil, size_t argc, lil_value_t *argv)
 	return val;
 }
 
-static lil_value_t fnc_try(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_try(struct lil *lil, size_t argc,
+				 struct lil_value **argv)
 {
-	lil_value_t r;
+	struct lil_value *r;
 	if (argc < 1)
 		return NULL;
 	if (lil->error)
@@ -3721,13 +3782,15 @@ static lil_value_t fnc_try(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_error(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_error(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	lil_set_error(lil, argc > 0 ? lil_to_string(argv[0]) : NULL);
 	return NULL;
 }
 
-static lil_value_t fnc_exit(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_exit(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
 	if (lil->callback[LIL_CALLBACK_EXIT]) {
 		lil_exit_callback_proc_t proc =
@@ -3738,12 +3801,13 @@ static lil_value_t fnc_exit(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t fnc_source(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_source(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	FILE *f;
 	size_t size;
 	char *buffer;
-	lil_value_t r;
+	struct lil_value *r;
 	if (argc < 1)
 		return NULL;
 	if (lil->callback[LIL_CALLBACK_SOURCE]) {
@@ -3773,9 +3837,10 @@ static lil_value_t fnc_source(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_lmap(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_lmap(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
-	lil_list_t list;
+	struct lil_list *list;
 	size_t i;
 	if (argc < 2)
 		return NULL;
@@ -3787,12 +3852,14 @@ static lil_value_t fnc_lmap(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t fnc_rand(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_rand(struct lil *lil, size_t argc,
+				  struct lil_value **argv)
 {
 	return lil_alloc_double(rand() / (double)RAND_MAX);
 }
 
-static lil_value_t fnc_catcher(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_catcher(struct lil *lil, size_t argc,
+				     struct lil_value **argv)
 {
 	if (argc == 0) {
 		return lil_alloc_string(lil->catcher);
@@ -3804,7 +3871,8 @@ static lil_value_t fnc_catcher(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t fnc_watch(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_watch(struct lil *lil, size_t argc,
+				   struct lil_value **argv)
 {
 	size_t i;
 	const char *wcode;
@@ -3813,7 +3881,7 @@ static lil_value_t fnc_watch(lil_t lil, size_t argc, lil_value_t *argv)
 	wcode = lil_to_string(argv[argc - 1]);
 	for (i = 0; i + 1 < argc; i++) {
 		const char *vname = lil_to_string(argv[i]);
-		lil_var_t v;
+		struct lil_var *v;
 		if (!vname[0])
 			continue;
 		v = lil_find_var(lil, lil->env, lil_to_string(argv[i]));
@@ -3825,7 +3893,7 @@ static lil_value_t fnc_watch(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static void register_stdcmds(lil_t lil)
+static void register_stdcmds(struct lil *lil)
 {
 	lil_register(lil, "reflect", fnc_reflect);
 	lil_register(lil, "func", fnc_func);

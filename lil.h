@@ -44,93 +44,96 @@
 
 #include <stdint.h>
 #include <inttypes.h>
-typedef int64_t lilint_t;
 #define LILINT_PRINTF "%" PRIi64
 
-typedef struct _lil_value_t *lil_value_t;
-typedef struct _lil_func_t *lil_func_t;
-typedef struct _lil_var_t *lil_var_t;
-typedef struct _lil_env_t *lil_env_t;
-typedef struct _lil_list_t *lil_list_t;
-typedef struct _lil_t *lil_t;
-typedef lil_value_t (*lil_func_proc_t)(lil_t lil, size_t argc,
-				       lil_value_t *argv);
-typedef void (*lil_exit_callback_proc_t)(lil_t lil, lil_value_t arg);
-typedef void (*lil_write_callback_proc_t)(lil_t lil, const char *msg);
-typedef char *(*lil_read_callback_proc_t)(lil_t lil, const char *name);
-typedef char *(*lil_source_callback_proc_t)(lil_t lil, const char *name);
-typedef void (*lil_store_callback_proc_t)(lil_t lil, const char *name,
+struct lil_value;
+struct lil_func;
+struct lil_var;
+struct lil_env;
+struct lil_list;
+struct lil;
+typedef struct lil_value *(*lil_func_proc_t)(struct lil *lil, size_t argc,
+					     struct lil_value **argv);
+typedef void (*lil_exit_callback_proc_t)(struct lil *lil,
+					 struct lil_value *arg);
+typedef void (*lil_write_callback_proc_t)(struct lil *lil, const char *msg);
+typedef char *(*lil_read_callback_proc_t)(struct lil *lil, const char *name);
+typedef char *(*lil_source_callback_proc_t)(struct lil *lil, const char *name);
+typedef void (*lil_store_callback_proc_t)(struct lil *lil, const char *name,
 					  const char *data);
-typedef void (*lil_error_callback_proc_t)(lil_t lil, size_t pos,
+typedef void (*lil_error_callback_proc_t)(struct lil *lil, size_t pos,
 					  const char *msg);
-typedef int (*lil_setvar_callback_proc_t)(lil_t lil, const char *name,
-					  lil_value_t *value);
-typedef int (*lil_getvar_callback_proc_t)(lil_t lil, const char *name,
-					  lil_value_t *value);
+typedef int (*lil_setvar_callback_proc_t)(struct lil *lil, const char *name,
+					  struct lil_value **value);
+typedef int (*lil_getvar_callback_proc_t)(struct lil *lil, const char *name,
+					  struct lil_value **value);
 typedef void (*lil_callback_proc_t)(void);
 
-lil_t lil_new(void);
-void lil_free(lil_t lil);
+struct lil *lil_new(void);
+void lil_free(struct lil *lil);
 
-int lil_register(lil_t lil, const char *name, lil_func_proc_t proc);
+int lil_register(struct lil *lil, const char *name, lil_func_proc_t proc);
 
-lil_value_t lil_parse(lil_t lil, const char *code, size_t codelen,
-		      int funclevel);
-lil_value_t lil_parse_value(lil_t lil, lil_value_t val, int funclevel);
-lil_value_t lil_call(lil_t lil, const char *funcname, size_t argc,
-		     lil_value_t *argv);
+struct lil_value *lil_parse(struct lil *lil, const char *code, size_t codelen,
+			    int funclevel);
+struct lil_value *lil_parse_value(struct lil *lil, struct lil_value *val,
+				  int funclevel);
+struct lil_value *lil_call(struct lil *lil, const char *funcname, size_t argc,
+			   struct lil_value **argv);
 
-void lil_callback(lil_t lil, int cb, lil_callback_proc_t proc);
+void lil_callback(struct lil *lil, int cb, lil_callback_proc_t proc);
 
-void lil_set_error(lil_t lil, const char *msg);
-void lil_set_error_at(lil_t lil, size_t pos, const char *msg);
-int lil_error(lil_t lil, const char **msg, size_t *pos);
+void lil_set_error(struct lil *lil, const char *msg);
+void lil_set_error_at(struct lil *lil, size_t pos, const char *msg);
+int lil_error(struct lil *lil, const char **msg, size_t *pos);
 
-const char *lil_to_string(lil_value_t val);
-double lil_to_double(lil_value_t val);
-lilint_t lil_to_integer(lil_value_t val);
-int lil_to_boolean(lil_value_t val);
+const char *lil_to_string(struct lil_value *val);
+double lil_to_double(struct lil_value *val);
+ssize_t lil_to_integer(struct lil_value *val);
+int lil_to_boolean(struct lil_value *val);
 
-lil_value_t lil_alloc_string(const char *str);
-lil_value_t lil_alloc_double(double num);
-lil_value_t lil_alloc_integer(lilint_t num);
-void lil_free_value(lil_value_t val);
+struct lil_value *lil_alloc_string(const char *str);
+struct lil_value *lil_alloc_double(double num);
+struct lil_value *lil_alloc_integer(ssize_t num);
+void lil_free_value(struct lil_value *val);
 
-lil_value_t lil_clone_value(lil_value_t src);
-int lil_append_char(lil_value_t val, char ch);
-int lil_append_string(lil_value_t val, const char *s);
-int lil_append_val(lil_value_t val, lil_value_t v);
+struct lil_value *lil_clone_value(struct lil_value *src);
+int lil_append_char(struct lil_value *val, char ch);
+int lil_append_string(struct lil_value *val, const char *s);
+int lil_append_val(struct lil_value *val, struct lil_value *v);
 
-lil_list_t lil_alloc_list(void);
-void lil_free_list(lil_list_t list);
-void lil_list_append(lil_list_t list, lil_value_t val);
-size_t lil_list_size(lil_list_t list);
-lil_value_t lil_list_get(lil_list_t list, size_t index);
-lil_value_t lil_list_to_value(lil_list_t list, int do_escape);
+struct lil_list *lil_alloc_list(void);
+void lil_free_list(struct lil_list *list);
+void lil_list_append(struct lil_list *list, struct lil_value *val);
+size_t lil_list_size(struct lil_list *list);
+struct lil_value *lil_list_get(struct lil_list *list, size_t index);
+struct lil_value *lil_list_to_value(struct lil_list *list, int do_escape);
 
-lil_list_t lil_subst_to_list(lil_t lil, lil_value_t code);
-lil_value_t lil_subst_to_value(lil_t lil, lil_value_t code);
+struct lil_list *lil_subst_to_list(struct lil *lil, struct lil_value *code);
+struct lil_value *lil_subst_to_value(struct lil *lil, struct lil_value *code);
 
-lil_env_t lil_alloc_env(lil_env_t parent);
-void lil_free_env(lil_env_t env);
-lil_env_t lil_push_env(lil_t lil);
-void lil_pop_env(lil_t lil);
+struct lil_env *lil_alloc_env(struct lil_env *parent);
+void lil_free_env(struct lil_env *env);
+struct lil_env *lil_push_env(struct lil *lil);
+void lil_pop_env(struct lil *lil);
 
-lil_var_t lil_set_var(lil_t lil, const char *name, lil_value_t val, int local);
-lil_value_t lil_get_var(lil_t lil, const char *name);
-lil_value_t lil_get_var_or(lil_t lil, const char *name, lil_value_t defvalue);
+struct lil_var *lil_set_var(struct lil *lil, const char *name,
+			    struct lil_value *val, int local);
+struct lil_value *lil_get_var(struct lil *lil, const char *name);
+struct lil_value *lil_get_var_or(struct lil *lil, const char *name,
+				 struct lil_value *defvalue);
 
-lil_value_t lil_eval_expr(lil_t lil, lil_value_t code);
-lil_value_t lil_unused_name(lil_t lil, const char *part);
+struct lil_value *lil_eval_expr(struct lil *lil, struct lil_value *code);
+struct lil_value *lil_unused_name(struct lil *lil, const char *part);
 
-lil_value_t lil_arg(lil_value_t *argv, size_t index);
+struct lil_value *lil_arg(struct lil_value **argv, size_t index);
 
-void lil_set_data(lil_t lil, void *data);
-void *lil_get_data(lil_t lil);
+void lil_set_data(struct lil *lil, void *data);
+void *lil_get_data(struct lil *lil);
 
-char *lil_embedded(lil_t lil, const char *code, unsigned int flags);
+char *lil_embedded(struct lil *lil, const char *code, unsigned int flags);
 void lil_freemem(void *ptr);
 
-void lil_write(lil_t lil, const char *msg);
+void lil_write(struct lil *lil, const char *msg);
 
 #endif

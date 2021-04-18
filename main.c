@@ -32,7 +32,7 @@
 static int running = 1;
 static int exit_code = 0;
 
-static void do_exit(lil_t lil, lil_value_t val)
+static void do_exit(struct lil *lil, struct lil_value *val)
 {
 	running = 0;
 	exit_code = (int)lil_to_integer(val);
@@ -77,7 +77,8 @@ static char *do_system(size_t argc, char **argv)
 	}
 }
 
-static lil_value_t fnc_writechar(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_writechar(struct lil *lil, size_t argc,
+				       struct lil_value **argv)
 {
 	if (!argc)
 		return NULL;
@@ -85,10 +86,11 @@ static lil_value_t fnc_writechar(lil_t lil, size_t argc, lil_value_t *argv)
 	return NULL;
 }
 
-static lil_value_t fnc_system(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_system(struct lil *lil, size_t argc,
+				    struct lil_value **argv)
 {
 	const char **sargv = malloc(sizeof(char *) * (argc + 1));
-	lil_value_t r = NULL;
+	struct lil_value *r = NULL;
 	char *rv;
 	size_t i;
 	if (argc == 0)
@@ -105,17 +107,19 @@ static lil_value_t fnc_system(lil_t lil, size_t argc, lil_value_t *argv)
 	return r;
 }
 
-static lil_value_t fnc_canread(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_canread(struct lil *lil, size_t argc,
+				     struct lil_value **argv)
 {
 	return (feof(stdin) || ferror(stdin)) ? NULL : lil_alloc_integer(1);
 }
 
-static lil_value_t fnc_readline(lil_t lil, size_t argc, lil_value_t *argv)
+static struct lil_value *fnc_readline(struct lil *lil, size_t argc,
+				      struct lil_value **argv)
 {
 	size_t len = 0, size = 64;
 	char *buffer;
 	int ch;
-	lil_value_t retval;
+	struct lil_value *retval;
 	if (feof(stdin)) {
 		lil_set_error(lil, "End of file");
 		return NULL;
@@ -148,7 +152,7 @@ static lil_value_t fnc_readline(lil_t lil, size_t argc, lil_value_t *argv)
 static int repl(void)
 {
 	char buffer[16384];
-	lil_t lil = lil_new();
+	struct lil *lil = lil_new();
 	lil_register(lil, "writechar", fnc_writechar);
 	lil_register(lil, "system", fnc_system);
 	lil_register(lil, "canread", fnc_canread);
@@ -156,7 +160,7 @@ static int repl(void)
 	printf("Little Interpreted Language Interactive Shell\n");
 	lil_callback(lil, LIL_CALLBACK_EXIT, (lil_callback_proc_t)do_exit);
 	while (running) {
-		lil_value_t result;
+		struct lil_value *result;
 		const char *strres;
 		const char *err_msg;
 		size_t pos;
@@ -179,12 +183,12 @@ static int repl(void)
 
 static int nonint(int argc, const char *argv[])
 {
-	lil_t lil = lil_new();
+	struct lil *lil = lil_new();
 	const char *filename = argv[1];
 	const char *err_msg;
 	size_t pos;
-	lil_list_t arglist = lil_alloc_list();
-	lil_value_t args, result;
+	struct lil_list *arglist = lil_alloc_list();
+	struct lil_value *args, *result;
 	char *tmpcode;
 	int i;
 	lil_register(lil, "writechar", fnc_writechar);
