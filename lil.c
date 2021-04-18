@@ -2503,7 +2503,7 @@ struct lil_value *lil_alloc_double(double num)
 struct lil_value *lil_alloc_integer(ssize_t num)
 {
 	char buff[128];
-	sprintf(buff, LILINT_PRINTF, num);
+	sprintf(buff, "%" PRIi64, num);
 	return alloc_value(buff);
 }
 

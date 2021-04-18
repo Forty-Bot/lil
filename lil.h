@@ -44,7 +44,6 @@
 
 #include <stdint.h>
 #include <inttypes.h>
-#define LILINT_PRINTF "%" PRIi64
 
 struct lil_value;
 struct lil_func;
