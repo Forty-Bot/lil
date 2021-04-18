@@ -50,19 +50,19 @@
 
 /* note: static lil_xxx functions might become public later */
 
-struct hashentry_t {
+struct hashentry {
 	char *k;
 	void *v;
 };
 
-struct hashcell_t {
-	struct hashentry_t *e;
+struct hashcell {
+	struct hashentry *e;
 	size_t c;
 };
 
-typedef struct _hashmap_t {
-	struct hashcell_t cell[HASHMAP_CELLS];
-} hashmap_t;
+struct hashmap {
+	struct hashcell cell[HASHMAP_CELLS];
+};
 
 struct lil_value {
 	size_t l;
@@ -85,7 +85,7 @@ struct lil_env {
 	struct lil_value *catcher_for;
 	struct lil_var **var;
 	size_t vars;
-	hashmap_t varmap;
+	struct hashmap varmap;
 	struct lil_value *retval;
 	int retval_set;
 	int breakrun;
@@ -113,7 +113,7 @@ struct lil {
 	struct lil_func **cmd;
 	size_t cmds;
 	size_t syscmds;
-	hashmap_t cmdmap;
+	struct hashmap cmdmap;
 	char *catcher;
 	int in_catcher;
 	char *dollarprefix;
@@ -169,12 +169,12 @@ static unsigned long hm_hash(const char *key)
 	return hash;
 }
 
-static void hm_init(hashmap_t *hm)
+static void hm_init(struct hashmap *hm)
 {
-	memset(hm, 0, sizeof(hashmap_t));
+	memset(hm, 0, sizeof(struct hashmap));
 }
 
-static void hm_destroy(hashmap_t *hm)
+static void hm_destroy(struct hashmap *hm)
 {
 	size_t i, j;
 	for (i = 0; i < HASHMAP_CELLS; i++) {
@@ -184,24 +184,24 @@ static void hm_destroy(hashmap_t *hm)
 	}
 }
 
-static void hm_put(hashmap_t *hm, const char *key, void *value)
+static void hm_put(struct hashmap *hm, const char *key, void *value)
 {
-	struct hashcell_t *cell = hm->cell + (hm_hash(key) & HASHMAP_CELLMASK);
+	struct hashcell *cell = hm->cell + (hm_hash(key) & HASHMAP_CELLMASK);
 	size_t i;
 	for (i = 0; i < cell->c; i++)
 		if (!strcmp(key, cell->e[i].k)) {
 			cell->e[i].v = value;
 			return;
 		}
-	cell->e = realloc(cell->e, sizeof(struct hashentry_t) * (cell->c + 1));
+	cell->e = realloc(cell->e, sizeof(struct hashentry) * (cell->c + 1));
 	cell->e[cell->c].k = strclone(key);
 	cell->e[cell->c].v = value;
 	cell->c++;
 }
 
-static void *hm_get(hashmap_t *hm, const char *key)
+static void *hm_get(struct hashmap *hm, const char *key)
 {
-	struct hashcell_t *cell = hm->cell + (hm_hash(key) & HASHMAP_CELLMASK);
+	struct hashcell *cell = hm->cell + (hm_hash(key) & HASHMAP_CELLMASK);
 	size_t i;
 	for (i = 0; i < cell->c; i++)
 		if (!strcmp(key, cell->e[i].k))
@@ -209,9 +209,9 @@ static void *hm_get(hashmap_t *hm, const char *key)
 	return NULL;
 }
 
-static int hm_has(hashmap_t *hm, const char *key)
+static int hm_has(struct hashmap *hm, const char *key)
 {
-	struct hashcell_t *cell = hm->cell + (hm_hash(key) & HASHMAP_CELLMASK);
+	struct hashcell *cell = hm->cell + (hm_hash(key) & HASHMAP_CELLMASK);
 	size_t i;
 	for (i = 0; i < cell->c; i++)
 		if (!strcmp(key, cell->e[i].k))
