@@ -1164,8 +1164,8 @@ lil_value_t lil_parse_value(lil_t lil, lil_value_t val, int funclevel)
 	return lil_parse(lil, val->d, val->l, funclevel);
 }
 
-LILAPI lil_value_t lil_call(lil_t lil, const char *funcname, size_t argc,
-			    lil_value_t *argv)
+lil_value_t lil_call(lil_t lil, const char *funcname, size_t argc,
+		     lil_value_t *argv)
 {
 	lil_func_t cmd = find_cmd(lil, funcname);
 	lil_value_t r = NULL;
@@ -2522,12 +2522,12 @@ void lil_free(lil_t lil)
 	free(lil);
 }
 
-LILAPI void lil_set_data(lil_t lil, void *data)
+void lil_set_data(lil_t lil, void *data)
 {
 	lil->data = data;
 }
 
-LILAPI void *lil_get_data(lil_t lil)
+void *lil_get_data(lil_t lil)
 {
 	return lil->data;
 }
