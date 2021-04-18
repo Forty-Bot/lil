@@ -996,6 +996,77 @@ struct lil_value *lil_subst_to_value(struct lil *lil, struct lil_value *code)
 	return val;
 }
 
+static struct lil_value *unknown_cmd(struct lil *lil, struct lil_list *words)
+{
+	struct lil_value *r = NULL;
+
+	if (lil->catcher) {
+		if (lil->in_catcher < MAX_CATCHER_DEPTH) {
+			struct lil_value *args;
+			lil->in_catcher++;
+			lil_push_env(lil);
+			lil->env->catcher_for = words->v[0];
+			args = lil_list_to_value(words, 1);
+			lil_set_var(lil, "args", args, LIL_SETVAR_LOCAL_NEW);
+			lil_free_value(args);
+			r = lil_parse(lil, lil->catcher, 0, 1);
+			lil_pop_env(lil);
+			lil->in_catcher--;
+		} else {
+			char *msg = malloc(words->v[0]->l + 64);
+			sprintf(msg,
+				"catcher limit reached while trying to call unknown function %s",
+				words->v[0]->d);
+			lil_set_error_at(lil, lil->head, msg);
+			free(msg);
+		}
+	} else {
+		char *msg = malloc(words->v[0]->l + 32);
+		sprintf(msg, "unknown function %s", words->v[0]->d);
+		lil_set_error_at(lil, lil->head, msg);
+		free(msg);
+	}
+
+	return r;
+}
+
+static struct lil_value *run_cmd(struct lil *lil, struct lil_func *cmd,
+				 struct lil_list *words)
+{
+	struct lil_value *r;
+
+	if (cmd->proc) {
+		size_t shead = lil->head;
+		r = cmd->proc(lil, words->c - 1, words->v + 1);
+		if (lil->error == ERROR_FIXHEAD) {
+			lil->error = ERROR_DEFAULT;
+			lil->err_head = shead;
+		}
+	} else {
+		lil_push_env(lil);
+		lil->env->func = cmd;
+		if (cmd->argnames->c == 1 &&
+		    !strcmp(lil_to_string(cmd->argnames->v[0]), "args")) {
+			struct lil_value *args = lil_list_to_value(words, 1);
+			lil_set_var(lil, "args", args, LIL_SETVAR_LOCAL_NEW);
+			lil_free_value(args);
+		} else {
+			size_t i;
+			for (i = 0; i < cmd->argnames->c; i++) {
+				lil_set_var(lil,
+					    lil_to_string(cmd->argnames->v[i]),
+					    i < words->c - 1 ? words->v[i + 1] :
+								     lil->empty,
+					    LIL_SETVAR_LOCAL_NEW);
+			}
+		}
+		r = lil_parse_value(lil, cmd->code, 1);
+		lil_pop_env(lil);
+	}
+
+	return r;
+}
+
 struct lil_value *lil_parse(struct lil *lil, const char *code, size_t codelen,
 			    int funclevel)
 {
@@ -1035,104 +1106,20 @@ struct lil_value *lil_parse(struct lil *lil, const char *code, size_t codelen,
 		if (words->c) {
 			struct lil_func *cmd =
 				find_cmd(lil, lil_to_string(words->v[0]));
+
 			if (!cmd) {
 				if (words->v[0]->l) {
-					if (lil->catcher) {
-						if (lil->in_catcher <
-						    MAX_CATCHER_DEPTH) {
-							struct lil_value *args;
-							lil->in_catcher++;
-							lil_push_env(lil);
-							lil->env->catcher_for =
-								words->v[0];
-							args = lil_list_to_value(
-								words, 1);
-							lil_set_var(
-								lil, "args",
-								args,
-								LIL_SETVAR_LOCAL_NEW);
-							lil_free_value(args);
-							val = lil_parse(
-								lil,
-								lil->catcher, 0,
-								1);
-							lil_pop_env(lil);
-							lil->in_catcher--;
-						} else {
-							char *msg = malloc(
-								words->v[0]->l +
-								64);
-							sprintf(msg,
-								"catcher limit reached while trying to call unknown function %s",
-								words->v[0]->d);
-							lil_set_error_at(
-								lil, lil->head,
-								msg);
-							free(msg);
-							goto cleanup;
-						}
-					} else {
-						char *msg = malloc(
-							words->v[0]->l + 32);
-						sprintf(msg,
-							"unknown function %s",
-							words->v[0]->d);
-						lil_set_error_at(lil, lil->head,
-								 msg);
-						free(msg);
+					val = unknown_cmd(lil, words);
+					if (!val)
 						goto cleanup;
-					}
 				}
+			} else {
+				val = run_cmd(lil, cmd, words);
 			}
-			if (cmd) {
-				if (cmd->proc) {
-					size_t shead = lil->head;
-					val = cmd->proc(lil, words->c - 1,
-							words->v + 1);
-					if (lil->error == ERROR_FIXHEAD) {
-						lil->error = ERROR_DEFAULT;
-						lil->err_head = shead;
-					}
-				} else {
-					lil_push_env(lil);
-					lil->env->func = cmd;
-					if (cmd->argnames->c == 1 &&
-					    !strcmp(lil_to_string(
-							    cmd->argnames->v[0]),
-						    "args")) {
-						struct lil_value *args =
-							lil_list_to_value(words,
-									  1);
-						lil_set_var(
-							lil, "args", args,
-							LIL_SETVAR_LOCAL_NEW);
-						lil_free_value(args);
-					} else {
-						size_t i;
-						for (i = 0;
-						     i < cmd->argnames->c;
-						     i++) {
-							lil_set_var(
-								lil,
-								lil_to_string(
-									cmd->argnames
-										->v[i]),
-								i < words->c - 1 ?
-									      words->v[i +
-										 1] :
-									      lil->empty,
-								LIL_SETVAR_LOCAL_NEW);
-						}
-					}
-					val = lil_parse_value(lil, cmd->code,
-							      1);
-					lil_pop_env(lil);
-				}
-			}
-		}
 
-		if (lil->env->breakrun)
-			goto cleanup;
+			if (lil->env->breakrun)
+				goto cleanup;
+		}
 
 		skip_spaces(lil);
 		while (ateol(lil))
