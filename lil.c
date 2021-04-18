@@ -131,12 +131,12 @@ struct lil {
 	size_t embedlen;
 };
 
-typedef struct _expreval_t {
+struct expreval {
 	const char *code;
 	size_t len, head;
 	ssize_t ival;
 	int error;
-} expreval_t;
+};
 
 static struct lil_value *next_word(struct lil *lil);
 static void register_stdcmds(struct lil *lil);
@@ -1242,7 +1242,7 @@ int lil_error(struct lil *lil, const char **msg, size_t *pos)
 #define EERR_DIVISION_BY_ZERO 3
 #define EERR_INVALID_EXPRESSION 4
 
-static void ee_expr(expreval_t *ee);
+static void ee_expr(struct expreval *ee);
 
 static int ee_invalidpunct(int ch)
 {
@@ -1250,13 +1250,13 @@ static int ee_invalidpunct(int ch)
 	       ch != ')' && ch != '-' && ch != '+';
 }
 
-static void ee_skip_spaces(expreval_t *ee)
+static void ee_skip_spaces(struct expreval *ee)
 {
 	while (ee->head < ee->len && isspace(ee->code[ee->head]))
 		ee->head++;
 }
 
-static void ee_numeric_element(expreval_t *ee)
+static void ee_numeric_element(struct expreval *ee)
 {
 	ee_skip_spaces(ee);
 	ee->ival = 0;
@@ -1268,7 +1268,7 @@ static void ee_numeric_element(expreval_t *ee)
 	}
 }
 
-static void ee_element(expreval_t *ee)
+static void ee_element(struct expreval *ee)
 {
 	if (isdigit(ee->code[ee->head])) {
 		ee_numeric_element(ee);
@@ -1282,7 +1282,7 @@ static void ee_element(expreval_t *ee)
 	ee->error = EERR_INVALID_EXPRESSION; /* special flag, will be cleared */
 }
 
-static void ee_paren(expreval_t *ee)
+static void ee_paren(struct expreval *ee)
 {
 	ee_skip_spaces(ee);
 	if (ee->code[ee->head] == '(') {
@@ -1297,7 +1297,7 @@ static void ee_paren(expreval_t *ee)
 		ee_element(ee);
 }
 
-static void ee_unary(expreval_t *ee)
+static void ee_unary(struct expreval *ee)
 {
 	ee_skip_spaces(ee);
 	if (ee->head < ee->len && !ee->error &&
@@ -1326,7 +1326,7 @@ static void ee_unary(expreval_t *ee)
 	}
 }
 
-static void ee_muldiv(expreval_t *ee)
+static void ee_muldiv(struct expreval *ee)
 {
 	ee_unary(ee);
 	if (ee->error)
@@ -1385,7 +1385,7 @@ static void ee_muldiv(expreval_t *ee)
 	}
 }
 
-static void ee_addsub(expreval_t *ee)
+static void ee_addsub(struct expreval *ee)
 {
 	ee_muldiv(ee);
 	ee_skip_spaces(ee);
@@ -1415,7 +1415,7 @@ static void ee_addsub(expreval_t *ee)
 	}
 }
 
-static void ee_shift(expreval_t *ee)
+static void ee_shift(struct expreval *ee)
 {
 	ee_addsub(ee);
 	ee_skip_spaces(ee);
@@ -1446,7 +1446,7 @@ static void ee_shift(expreval_t *ee)
 	}
 }
 
-static void ee_compare(expreval_t *ee)
+static void ee_compare(struct expreval *ee)
 {
 	ee_shift(ee);
 	ee_skip_spaces(ee);
@@ -1502,7 +1502,7 @@ static void ee_compare(expreval_t *ee)
 	}
 }
 
-static void ee_equals(expreval_t *ee)
+static void ee_equals(struct expreval *ee)
 {
 	ee_compare(ee);
 	ee_skip_spaces(ee);
@@ -1532,7 +1532,7 @@ static void ee_equals(expreval_t *ee)
 	}
 }
 
-static void ee_bitand(expreval_t *ee)
+static void ee_bitand(struct expreval *ee)
 {
 	ee_equals(ee);
 	ee_skip_spaces(ee);
@@ -1551,7 +1551,7 @@ static void ee_bitand(expreval_t *ee)
 	}
 }
 
-static void ee_bitor(expreval_t *ee)
+static void ee_bitor(struct expreval *ee)
 {
 	ee_bitand(ee);
 	ee_skip_spaces(ee);
@@ -1570,7 +1570,7 @@ static void ee_bitor(expreval_t *ee)
 	}
 }
 
-static void ee_logand(expreval_t *ee)
+static void ee_logand(struct expreval *ee)
 {
 	ee_bitor(ee);
 	ee_skip_spaces(ee);
@@ -1588,7 +1588,7 @@ static void ee_logand(expreval_t *ee)
 	}
 }
 
-static void ee_logor(expreval_t *ee)
+static void ee_logor(struct expreval *ee)
 {
 	ee_logand(ee);
 	ee_skip_spaces(ee);
@@ -1606,7 +1606,7 @@ static void ee_logor(expreval_t *ee)
 	}
 }
 
-static void ee_expr(expreval_t *ee)
+static void ee_expr(struct expreval *ee)
 {
 	ee_logor(ee);
 	/* invalid expression doesn't really matter, it is only used to stop
@@ -1619,7 +1619,7 @@ static void ee_expr(expreval_t *ee)
 
 struct lil_value *lil_eval_expr(struct lil *lil, struct lil_value *code)
 {
-	expreval_t ee;
+	struct expreval ee;
 	code = lil_subst_to_value(lil, code);
 	if (lil->error)
 		return NULL;
