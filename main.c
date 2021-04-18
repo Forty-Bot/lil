@@ -32,7 +32,7 @@
 static int running = 1;
 static int exit_code = 0;
 
-static LILCALLBACK void do_exit(lil_t lil, lil_value_t val)
+static void do_exit(lil_t lil, lil_value_t val)
 {
 	running = 0;
 	exit_code = (int)lil_to_integer(val);
@@ -77,8 +77,7 @@ static char *do_system(size_t argc, char **argv)
 	}
 }
 
-static LILCALLBACK lil_value_t fnc_writechar(lil_t lil, size_t argc,
-					     lil_value_t *argv)
+static lil_value_t fnc_writechar(lil_t lil, size_t argc, lil_value_t *argv)
 {
 	if (!argc)
 		return NULL;
@@ -86,8 +85,7 @@ static LILCALLBACK lil_value_t fnc_writechar(lil_t lil, size_t argc,
 	return NULL;
 }
 
-static LILCALLBACK lil_value_t fnc_system(lil_t lil, size_t argc,
-					  lil_value_t *argv)
+static lil_value_t fnc_system(lil_t lil, size_t argc, lil_value_t *argv)
 {
 	const char **sargv = malloc(sizeof(char *) * (argc + 1));
 	lil_value_t r = NULL;
@@ -107,14 +105,12 @@ static LILCALLBACK lil_value_t fnc_system(lil_t lil, size_t argc,
 	return r;
 }
 
-static LILCALLBACK lil_value_t fnc_canread(lil_t lil, size_t argc,
-					   lil_value_t *argv)
+static lil_value_t fnc_canread(lil_t lil, size_t argc, lil_value_t *argv)
 {
 	return (feof(stdin) || ferror(stdin)) ? NULL : lil_alloc_integer(1);
 }
 
-static LILCALLBACK lil_value_t fnc_readline(lil_t lil, size_t argc,
-					    lil_value_t *argv)
+static lil_value_t fnc_readline(lil_t lil, size_t argc, lil_value_t *argv)
 {
 	size_t len = 0, size = 64;
 	char *buffer;
