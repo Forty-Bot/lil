@@ -25,7 +25,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
-#include <math.h>
 #include <unistd.h>
 #include "lil.h"
 
@@ -136,8 +135,6 @@ typedef struct _expreval_t {
 	const char *code;
 	size_t len, head;
 	ssize_t ival;
-	double dval;
-	int type;
 	int error;
 } expreval_t;
 
@@ -1253,11 +1250,8 @@ int lil_error(struct lil *lil, const char **msg, size_t *pos)
 	return 1;
 }
 
-#define EE_INT 0
-#define EE_FLOAT 1
 #define EERR_NO_ERROR 0
 #define EERR_SYNTAX_ERROR 1
-#define EERR_INVALID_TYPE 2
 #define EERR_DIVISION_BY_ZERO 3
 #define EERR_INVALID_EXPRESSION 4
 
@@ -1277,29 +1271,14 @@ static void ee_skip_spaces(expreval_t *ee)
 
 static void ee_numeric_element(expreval_t *ee)
 {
-	ssize_t fpart = 0, fpartlen = 1;
-	ee->type = EE_INT;
 	ee_skip_spaces(ee);
 	ee->ival = 0;
-	ee->dval = 0;
 	while (ee->head < ee->len) {
-		if (ee->code[ee->head] == '.') {
-			if (ee->type == EE_FLOAT)
-				break;
-			ee->type = EE_FLOAT;
-			ee->head++;
-		} else if (!isdigit(ee->code[ee->head]))
+		if (!isdigit(ee->code[ee->head]))
 			break;
-		if (ee->type == EE_INT)
-			ee->ival = ee->ival * 10 + (ee->code[ee->head] - '0');
-		else {
-			fpart = fpart * 10 + (ee->code[ee->head] - '0');
-			fpartlen *= 10;
-		}
+		ee->ival = ee->ival * 10 + (ee->code[ee->head] - '0');
 		ee->head++;
 	}
-	if (ee->type == EE_FLOAT)
-		ee->dval = ee->ival + (double)fpart / (double)fpartlen;
 }
 
 static void ee_element(expreval_t *ee)
@@ -1312,7 +1291,6 @@ static void ee_element(expreval_t *ee)
 	/* for anything else that might creep in (usually from strings), we set the
      * value to 1 so that strings evaluate as "true" when used in conditional
      * expressions */
-	ee->type = EE_INT;
 	ee->ival = 1;
 	ee->error = EERR_INVALID_EXPRESSION; /* special flag, will be cleared */
 }
@@ -1344,47 +1322,16 @@ static void ee_unary(expreval_t *ee)
 			return;
 		switch (op) {
 		case '-':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->dval = -ee->dval;
-				break;
-			case EE_INT:
-				ee->ival = -ee->ival;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee->ival = -ee->ival;
 			break;
 		case '+':
 			/* ignore it, doesn't change a thing */
 			break;
 		case '~':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = ~((ssize_t)ee->dval);
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = ~ee->ival;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee->ival = ~ee->ival;
 			break;
 		case '!':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->dval = !ee->dval;
-				break;
-			case EE_INT:
-				ee->ival = !ee->ival;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee->ival = !ee->ival;
 			break;
 		}
 	} else {
@@ -1402,244 +1349,47 @@ static void ee_muldiv(expreval_t *ee)
 	       !ee_invalidpunct(ee->code[ee->head + 1]) &&
 	       (ee->code[ee->head] == '*' || ee->code[ee->head] == '/' ||
 		ee->code[ee->head] == '\\' || ee->code[ee->head] == '%')) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 
 		switch (ee->code[ee->head]) {
 		case '*':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->head++;
-				ee_unary(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->dval = ee->dval * odval;
-					break;
-				case EE_INT:
-					ee->dval = ee->ival * odval;
-					ee->type = EE_FLOAT;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee->head++;
-				ee_unary(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->dval = ee->dval * oival;
-					ee->type = EE_FLOAT;
-					break;
-				case EE_INT:
-					ee->ival = ee->ival * oival;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee->head++;
+			ee_unary(ee);
+			if (ee->error)
+				return;
+			ee->ival = ee->ival * oival;
 			break;
 		case '%':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->head++;
-				ee_unary(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					if (ee->dval == 0.0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->dval =
-							fmod(odval, ee->dval);
-					}
-					break;
-				case EE_INT:
-					if (ee->ival == 0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->dval =
-							fmod(odval, ee->ival);
-					}
-					ee->type = EE_FLOAT;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee->head++;
-				ee_unary(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					if (ee->dval == 0.0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->dval =
-							fmod(oival, ee->dval);
-					}
-					break;
-				case EE_INT:
-					if (ee->ival == 0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->ival = oival % ee->ival;
-					}
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
+			ee->head++;
+			ee_unary(ee);
+			if (ee->error)
+				return;
+			if (ee->ival == 0) {
+				ee->error = EERR_DIVISION_BY_ZERO;
+			} else {
+				ee->ival = oival % ee->ival;
 			}
 			break;
 		case '/':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->head++;
-				ee_unary(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					if (ee->dval == 0.0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->dval = odval / ee->dval;
-					}
-					break;
-				case EE_INT:
-					if (ee->ival == 0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->dval = odval /
-							   (double)ee->ival;
-					}
-					ee->type = EE_FLOAT;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee->head++;
-				ee_unary(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					if (ee->dval == 0.0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->dval = (double)oival /
-							   ee->dval;
-					}
-					break;
-				case EE_INT:
-					if (ee->ival == 0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->dval = (double)oival /
-							   (double)ee->ival;
-					}
-					ee->type = EE_FLOAT;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
+			ee->head++;
+			ee_unary(ee);
+			if (ee->error)
+				return;
+			if (ee->ival == 0) {
+				ee->error = EERR_DIVISION_BY_ZERO;
+			} else {
+				ee->ival = oival / ee->ival;
 			}
 			break;
 		case '\\':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->head++;
-				ee_unary(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					if (ee->dval == 0.0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->ival = (ssize_t)(odval /
-								     ee->dval);
-					}
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					if (ee->ival == 0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->ival = (ssize_t)(
-							odval /
-							(double)ee->ival);
-					}
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee->head++;
-				ee_unary(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					if (ee->dval == 0.0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->ival = (ssize_t)(
-							(double)oival /
-							ee->dval);
-					}
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					if (ee->ival == 0) {
-						ee->error =
-							EERR_DIVISION_BY_ZERO;
-					} else {
-						ee->ival = oival / ee->ival;
-					}
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
+			ee->head++;
+			ee_unary(ee);
+			if (ee->error)
+				return;
+			if (ee->ival == 0) {
+				ee->error = EERR_DIVISION_BY_ZERO;
+			} else {
+				ee->ival = oival / ee->ival;
 			}
 			break;
 		}
@@ -1655,95 +1405,22 @@ static void ee_addsub(expreval_t *ee)
 	while (ee->head < ee->len && !ee->error &&
 	       !ee_invalidpunct(ee->code[ee->head + 1]) &&
 	       (ee->code[ee->head] == '+' || ee->code[ee->head] == '-')) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 
 		switch (ee->code[ee->head]) {
 		case '+':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->head++;
-				ee_muldiv(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->dval = ee->dval + odval;
-					break;
-				case EE_INT:
-					ee->dval = ee->ival + odval;
-					ee->type = EE_FLOAT;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee->head++;
-				ee_muldiv(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->dval = ee->dval + oival;
-					ee->type = EE_FLOAT;
-					break;
-				case EE_INT:
-					ee->ival = ee->ival + oival;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee->head++;
+			ee_muldiv(ee);
+			if (ee->error)
+				return;
+			ee->ival = ee->ival + oival;
 			break;
 		case '-':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->head++;
-				ee_muldiv(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->dval = odval - ee->dval;
-					break;
-				case EE_INT:
-					ee->dval = odval - ee->ival;
-					ee->type = EE_FLOAT;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee->head++;
-				ee_muldiv(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->dval = (double)oival - ee->dval;
-					ee->type = EE_FLOAT;
-					break;
-				case EE_INT:
-					ee->ival = oival - ee->ival;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee->head++;
+			ee_muldiv(ee);
+			if (ee->error)
+				return;
+			ee->ival = oival - ee->ival;
 			break;
 		}
 
@@ -1758,98 +1435,23 @@ static void ee_shift(expreval_t *ee)
 	while (ee->head < ee->len && !ee->error &&
 	       ((ee->code[ee->head] == '<' && ee->code[ee->head + 1] == '<') ||
 		(ee->code[ee->head] == '>' && ee->code[ee->head + 1] == '>'))) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 		ee->head++;
 
 		switch (ee->code[ee->head]) {
 		case '<':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->head++;
-				ee_addsub(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (ssize_t)odval
-						   << (ssize_t)ee->dval;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (ssize_t)odval << ee->ival;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee->head++;
-				ee_addsub(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = oival << (ssize_t)ee->dval;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = oival << ee->ival;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee->head++;
+			ee_addsub(ee);
+			if (ee->error)
+				return;
+			ee->ival = oival << ee->ival;
 			break;
 		case '>':
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->head++;
-				ee_addsub(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (ssize_t)odval >>
-						   (ssize_t)ee->dval;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (ssize_t)odval >> ee->ival;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee->head++;
-				ee_addsub(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = oival >> (ssize_t)ee->dval;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = oival >> ee->ival;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee->head++;
+			ee_addsub(ee);
+			if (ee->error)
+				return;
+			ee->ival = oival >> ee->ival;
 			break;
 		}
 
@@ -1868,7 +1470,6 @@ static void ee_compare(expreval_t *ee)
 		 !ee_invalidpunct(ee->code[ee->head + 1])) ||
 		(ee->code[ee->head] == '<' && ee->code[ee->head + 1] == '=') ||
 		(ee->code[ee->head] == '>' && ee->code[ee->head + 1] == '='))) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 		int op = 4;
 		if (ee->code[ee->head] == '<' &&
@@ -1885,168 +1486,28 @@ static void ee_compare(expreval_t *ee)
 
 		switch (op) {
 		case 1:
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee_shift(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (odval < ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (odval < ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee_shift(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (oival < ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (oival < ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee_shift(ee);
+			if (ee->error)
+				return;
+			ee->ival = (oival < ee->ival) ? 1 : 0;
 			break;
 		case 2:
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee_shift(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (odval > ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (odval > ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee_shift(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (oival > ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (oival > ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee_shift(ee);
+			if (ee->error)
+				return;
+			ee->ival = (oival > ee->ival) ? 1 : 0;
 			break;
 		case 3:
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee_shift(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (odval <= ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (odval <= ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee_shift(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (oival <= ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (oival <= ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee_shift(ee);
+			if (ee->error)
+				return;
+			ee->ival = (oival <= ee->ival) ? 1 : 0;
 			break;
 		case 4:
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee_shift(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (odval >= ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (odval >= ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee_shift(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (oival >= ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (oival >= ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee_shift(ee);
+			if (ee->error)
+				return;
+			ee->ival = (oival >= ee->ival) ? 1 : 0;
 			break;
 		}
 
@@ -2061,93 +1522,22 @@ static void ee_equals(expreval_t *ee)
 	while (ee->head < ee->len && !ee->error &&
 	       ((ee->code[ee->head] == '=' && ee->code[ee->head + 1] == '=') ||
 		(ee->code[ee->head] == '!' && ee->code[ee->head + 1] == '='))) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 		int op = ee->code[ee->head] == '=' ? 1 : 2;
 		ee->head += 2;
 
 		switch (op) {
 		case 1:
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee_compare(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (odval == ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (odval == ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee_compare(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (oival == ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (oival == ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee_compare(ee);
+			if (ee->error)
+				return;
+			ee->ival = (oival == ee->ival) ? 1 : 0;
 			break;
 		case 2:
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee_compare(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (odval != ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (odval != ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			case EE_INT:
-				ee_compare(ee);
-				if (ee->error)
-					return;
-				switch (ee->type) {
-				case EE_FLOAT:
-					ee->ival = (oival != ee->dval) ? 1 : 0;
-					ee->type = EE_INT;
-					break;
-				case EE_INT:
-					ee->ival = (oival != ee->ival) ? 1 : 0;
-					break;
-				default:
-					ee->error = EERR_INVALID_TYPE;
-					break;
-				}
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
+			ee_compare(ee);
+			if (ee->error)
+				return;
+			ee->ival = (oival != ee->ival) ? 1 : 0;
 			break;
 		}
 
@@ -2162,49 +1552,13 @@ static void ee_bitand(expreval_t *ee)
 	while (ee->head < ee->len && !ee->error &&
 	       (ee->code[ee->head] == '&' &&
 		!ee_invalidpunct(ee->code[ee->head + 1]))) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 		ee->head++;
 
-		switch (ee->type) {
-		case EE_FLOAT:
-			ee_equals(ee);
-			if (ee->error)
-				return;
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = (ssize_t)odval & (ssize_t)ee->dval;
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = (ssize_t)odval & ee->ival;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
-			break;
-		case EE_INT:
-			ee_equals(ee);
-			if (ee->error)
-				return;
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = oival & (ssize_t)ee->dval;
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = oival & ee->ival;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
-			break;
-		default:
-			ee->error = EERR_INVALID_TYPE;
-			break;
-		}
+		ee_equals(ee);
+		if (ee->error)
+			return;
+		ee->ival = oival & ee->ival;
 
 		ee_skip_spaces(ee);
 	}
@@ -2217,49 +1571,13 @@ static void ee_bitor(expreval_t *ee)
 	while (ee->head < ee->len && !ee->error &&
 	       (ee->code[ee->head] == '|' &&
 		!ee_invalidpunct(ee->code[ee->head + 1]))) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 		ee->head++;
 
-		switch (ee->type) {
-		case EE_FLOAT:
-			ee_bitand(ee);
-			if (ee->error)
-				return;
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = (ssize_t)odval | (ssize_t)ee->dval;
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = (ssize_t)odval | ee->ival;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
-			break;
-		case EE_INT:
-			ee_bitand(ee);
-			if (ee->error)
-				return;
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = oival | (ssize_t)ee->dval;
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = oival | ee->ival;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
-			break;
-		default:
-			ee->error = EERR_INVALID_TYPE;
-			break;
-		}
+		ee_bitand(ee);
+		if (ee->error)
+			return;
+		ee->ival = oival | ee->ival;
 
 		ee_skip_spaces(ee);
 	}
@@ -2271,49 +1589,13 @@ static void ee_logand(expreval_t *ee)
 	ee_skip_spaces(ee);
 	while (ee->head < ee->len && !ee->error &&
 	       (ee->code[ee->head] == '&' && ee->code[ee->head + 1] == '&')) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 		ee->head += 2;
 
-		switch (ee->type) {
-		case EE_FLOAT:
-			ee_bitor(ee);
-			if (ee->error)
-				return;
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = (odval && ee->dval) ? 1 : 0;
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = (odval && ee->ival) ? 1 : 0;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
-			break;
-		case EE_INT:
-			ee_bitor(ee);
-			if (ee->error)
-				return;
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = (oival && ee->dval) ? 1 : 0;
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = (oival && ee->ival) ? 1 : 0;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
-			break;
-		default:
-			ee->error = EERR_INVALID_TYPE;
-			break;
-		}
+		ee_bitor(ee);
+		if (ee->error)
+			return;
+		ee->ival = (oival && ee->ival) ? 1 : 0;
 
 		ee_skip_spaces(ee);
 	}
@@ -2325,49 +1607,13 @@ static void ee_logor(expreval_t *ee)
 	ee_skip_spaces(ee);
 	while (ee->head < ee->len && !ee->error &&
 	       (ee->code[ee->head] == '|' && ee->code[ee->head + 1] == '|')) {
-		double odval = ee->dval;
 		ssize_t oival = ee->ival;
 		ee->head += 2;
 
-		switch (ee->type) {
-		case EE_FLOAT:
-			ee_logand(ee);
-			if (ee->error)
-				return;
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = (odval || ee->dval) ? 1 : 0;
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = (odval || ee->ival) ? 1 : 0;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
-			break;
-		case EE_INT:
-			ee_logand(ee);
-			if (ee->error)
-				return;
-			switch (ee->type) {
-			case EE_FLOAT:
-				ee->ival = (oival || ee->dval) ? 1 : 0;
-				ee->type = EE_INT;
-				break;
-			case EE_INT:
-				ee->ival = (oival || ee->ival) ? 1 : 0;
-				break;
-			default:
-				ee->error = EERR_INVALID_TYPE;
-				break;
-			}
-			break;
-		default:
-			ee->error = EERR_INVALID_TYPE;
-			break;
-		}
+		ee_logand(ee);
+		if (ee->error)
+			return;
+		ee->ival = (oival || ee->ival) ? 1 : 0;
 
 		ee_skip_spaces(ee);
 	}
@@ -2400,8 +1646,6 @@ struct lil_value *lil_eval_expr(struct lil *lil, struct lil_value *code)
 	ee.head = 0;
 	ee.len = code->l;
 	ee.ival = 0;
-	ee.dval = 0;
-	ee.type = EE_INT;
 	ee.error = 0;
 	ee_expr(&ee);
 	lil_free_value(code);
@@ -2410,20 +1654,13 @@ struct lil_value *lil_eval_expr(struct lil *lil, struct lil_value *code)
 		case EERR_DIVISION_BY_ZERO:
 			lil_set_error(lil, "division by zero in expression");
 			break;
-		case EERR_INVALID_TYPE:
-			lil_set_error(lil,
-				      "mixing invalid types in expression");
-			break;
 		case EERR_SYNTAX_ERROR:
 			lil_set_error(lil, "expression syntax error");
 			break;
 		}
 		return NULL;
 	}
-	if (ee.type == EE_INT)
-		return lil_alloc_integer(ee.ival);
-	else
-		return lil_alloc_double(ee.dval);
+	return lil_alloc_integer(ee.ival);
 }
 
 struct lil_value *lil_unused_name(struct lil *lil, const char *part)
@@ -2452,11 +1689,6 @@ struct lil_value *lil_arg(struct lil_value **argv, size_t index)
 const char *lil_to_string(struct lil_value *val)
 {
 	return (val && val->l) ? val->d : "";
-}
-
-double lil_to_double(struct lil_value *val)
-{
-	return atof(lil_to_string(val));
 }
 
 ssize_t lil_to_integer(struct lil_value *val)
@@ -2491,13 +1723,6 @@ struct lil_value *lil_alloc_string(const char *str)
 struct lil_value *lil_alloc_string_len(const char *str, size_t len)
 {
 	return alloc_value_len(str, len);
-}
-
-struct lil_value *lil_alloc_double(double num)
-{
-	char buff[128];
-	sprintf(buff, "%f", num);
-	return alloc_value(buff);
 }
 
 struct lil_value *lil_alloc_integer(ssize_t num)
@@ -3353,14 +2578,12 @@ static struct lil_value *fnc_expr(struct lil *lil, size_t argc,
 	return NULL;
 }
 
-static struct lil_value *real_inc(struct lil *lil, const char *varname, float v)
+static struct lil_value *real_inc(struct lil *lil, const char *varname,
+				  ssize_t v)
 {
 	struct lil_value *pv = lil_get_var(lil, varname);
-	double dv = lil_to_double(pv) + v;
-	if (fmod(dv, 1))
-		pv = lil_alloc_double(dv);
-	else
-		pv = lil_alloc_integer((ssize_t)dv);
+
+	pv = lil_alloc_integer(lil_to_integer(pv) + v);
 	lil_set_var(lil, varname, pv, LIL_SETVAR_LOCAL);
 	return pv;
 }
@@ -3371,7 +2594,7 @@ static struct lil_value *fnc_inc(struct lil *lil, size_t argc,
 	if (argc < 1)
 		return NULL;
 	return real_inc(lil, lil_to_string(argv[0]),
-			argc > 1 ? lil_to_double(argv[1]) : 1);
+			argc > 1 ? lil_to_integer(argv[1]) : 1);
 }
 
 static struct lil_value *fnc_dec(struct lil *lil, size_t argc,
@@ -3380,7 +2603,7 @@ static struct lil_value *fnc_dec(struct lil *lil, size_t argc,
 	if (argc < 1)
 		return NULL;
 	return real_inc(lil, lil_to_string(argv[0]),
-			-(argc > 1 ? lil_to_double(argv[1]) : 1));
+			-(argc > 1 ? lil_to_integer(argv[1]) : 1));
 }
 
 static struct lil_value *fnc_read(struct lil *lil, size_t argc,
@@ -3855,7 +3078,7 @@ static struct lil_value *fnc_lmap(struct lil *lil, size_t argc,
 static struct lil_value *fnc_rand(struct lil *lil, size_t argc,
 				  struct lil_value **argv)
 {
-	return lil_alloc_double(rand() / (double)RAND_MAX);
+	return lil_alloc_integer(rand());
 }
 
 static struct lil_value *fnc_catcher(struct lil *lil, size_t argc,

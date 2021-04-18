@@ -87,12 +87,10 @@ void lil_set_error_at(struct lil *lil, size_t pos, const char *msg);
 int lil_error(struct lil *lil, const char **msg, size_t *pos);
 
 const char *lil_to_string(struct lil_value *val);
-double lil_to_double(struct lil_value *val);
 ssize_t lil_to_integer(struct lil_value *val);
 int lil_to_boolean(struct lil_value *val);
 
 struct lil_value *lil_alloc_string(const char *str);
-struct lil_value *lil_alloc_double(double num);
 struct lil_value *lil_alloc_integer(ssize_t num);
 void lil_free_value(struct lil_value *val);
 
