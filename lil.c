@@ -122,7 +122,6 @@ struct lil {
 	char *err_msg;
 	lil_callback_proc_t callback[CALLBACKS];
 	size_t parse_depth;
-	void *data;
 	char *embed;
 	size_t embedlen;
 };
@@ -1925,122 +1924,6 @@ void lil_free(struct lil *lil)
 	free(lil);
 }
 
-void lil_set_data(struct lil *lil, void *data)
-{
-	lil->data = data;
-}
-
-void *lil_get_data(struct lil *lil)
-{
-	return lil->data;
-}
-
-static void fnc_embed_write(struct lil *lil, const char *msg)
-{
-	size_t len = strlen(msg) + 1;
-
-	lil->embed = realloc(lil->embed, lil->embedlen + len);
-	memcpy(lil->embed + lil->embedlen, msg, len);
-	lil->embedlen += len - 1;
-}
-
-char *lil_embedded(struct lil *lil, const char *code, unsigned int flags)
-{
-	char *prev_embed = lil->embed;
-	size_t prev_embedlen = lil->embedlen;
-	lil_callback_proc_t prev_write = lil->callback[LIL_CALLBACK_WRITE];
-	char *lilcode = NULL;
-	size_t lilcodelen = 0;
-	char *cont = NULL;
-	size_t contlen = 0;
-	size_t head = 0, codelen = strlen(code);
-	char *result;
-
-	lil->callback[LIL_CALLBACK_WRITE] =
-		(lil_callback_proc_t)fnc_embed_write;
-	lil->embed = NULL;
-	lil->embedlen = 0;
-
-	while (head < codelen) {
-		if (head < codelen - 4 && code[head] == '<' &&
-		    code[head + 1] == '?' && code[head + 2] == 'l' &&
-		    code[head + 3] == 'i' && code[head + 4] == 'l') {
-			head += 5;
-			if (contlen) {
-				lilcode = realloc(lilcode,
-						  lilcodelen + contlen + 10);
-				memcpy(lilcode + lilcodelen, "\nwrite {", 8);
-				memcpy(lilcode + lilcodelen + 8, cont, contlen);
-				lilcode[lilcodelen + contlen + 8] = '}';
-				lilcode[lilcodelen + contlen + 9] = '\n';
-				lilcodelen += contlen + 10;
-				free(cont);
-				cont = NULL;
-				contlen = 0;
-			}
-
-			while (head < codelen) {
-				if (head < codelen - 1 && code[head] == '?' &&
-				    code[head + 1] == '>') {
-					head += 2;
-					break;
-				}
-
-				lilcode = realloc(lilcode, lilcodelen + 1);
-				lilcode[lilcodelen++] = code[head++];
-			}
-
-			lilcode = realloc(lilcode, lilcodelen + 1);
-			lilcode[lilcodelen++] = '\n';
-		} else {
-			if (code[head] == '{' || code[head] == '}') {
-				cont = realloc(cont, contlen + 6);
-				cont[contlen++] = '}';
-				cont[contlen++] = '"';
-				cont[contlen++] = '\\';
-
-				if (code[head] == '{')
-					cont[contlen++] = 'o';
-				else
-					cont[contlen++] = 'c';
-
-				cont[contlen++] = '"';
-				cont[contlen++] = '{';
-				head++;
-			} else {
-				cont = realloc(cont, contlen + 1);
-				cont[contlen++] = code[head++];
-			}
-		}
-	}
-	if (contlen) {
-		lilcode = realloc(lilcode, lilcodelen + contlen + 10);
-		memcpy(lilcode + lilcodelen, "\nwrite {", 8);
-		memcpy(lilcode + lilcodelen + 8, cont, contlen);
-		lilcode[lilcodelen + contlen + 8] = '}';
-		lilcode[lilcodelen + contlen + 9] = '\n';
-		lilcodelen += contlen + 10;
-		free(cont);
-	}
-
-	lilcode = realloc(lilcode, lilcodelen + 1);
-	lilcode[lilcodelen] = 0;
-	lil_free_value(lil_parse(lil, lilcode, 0, 1));
-	free(lilcode);
-	result = lil->embed ? lil->embed : strclone("");
-
-	lil->embed = prev_embed;
-	lil->embedlen = prev_embedlen;
-	lil->callback[LIL_CALLBACK_WRITE] = prev_write;
-
-	return result;
-}
-
-void lil_freemem(void *ptr)
-{
-	free(ptr);
-}
-
 void lil_write(struct lil *lil, const char *msg)
 {
 	if (lil->callback[LIL_CALLBACK_WRITE]) {
@@ -2901,70 +2784,6 @@ static struct lil_value *fnc_dec(struct lil *lil, size_t argc,
 			-(argc > 1 ? lil_to_integer(argv[1]) : 1));
 }
 
-static struct lil_value *fnc_read(struct lil *lil, size_t argc,
-				  struct lil_value **argv)
-{
-	FILE *f;
-	size_t size;
-	char *buffer;
-	struct lil_value *r;
-
-	if (argc < 1)
-		return NULL;
-
-	if (lil->callback[LIL_CALLBACK_READ]) {
-		lil_read_callback_proc_t proc =
-			(lil_read_callback_proc_t)
-				lil->callback[LIL_CALLBACK_READ];
-
-		buffer = proc(lil, lil_to_string(argv[0]));
-	} else {
-		f = fopen(lil_to_string(argv[0]), "rb");
-		if (!f)
-			return NULL;
-
-		fseek(f, 0, SEEK_END);
-		size = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		buffer = malloc(size + 1);
-		fread(buffer, 1, size, f);
-		buffer[size] = 0;
-		fclose(f);
-	}
-
-	r = lil_alloc_string(buffer);
-	free(buffer);
-	return r;
-}
-
-static struct lil_value *fnc_store(struct lil *lil, size_t argc,
-				   struct lil_value **argv)
-{
-	FILE *f;
-	const char *buffer;
-
-	if (argc < 2)
-		return NULL;
-
-	if (lil->callback[LIL_CALLBACK_STORE]) {
-		lil_store_callback_proc_t proc =
-			(lil_store_callback_proc_t)
-				lil->callback[LIL_CALLBACK_STORE];
-
-		proc(lil, lil_to_string(argv[0]), lil_to_string(argv[1]));
-	} else {
-		f = fopen(lil_to_string(argv[0]), "wb");
-		if (!f)
-			return NULL;
-
-		buffer = lil_to_string(argv[1]);
-		fwrite(buffer, 1, strlen(buffer), f);
-		fclose(f);
-	}
-
-	return lil_clone_value(argv[1]);
-}
-
 static struct lil_value *fnc_if(struct lil *lil, size_t argc,
 				struct lil_value **argv)
 {
@@ -3406,47 +3225,6 @@ static struct lil_value *fnc_exit(struct lil *lil, size_t argc,
 	return NULL;
 }
 
-static struct lil_value *fnc_source(struct lil *lil, size_t argc,
-				    struct lil_value **argv)
-{
-	FILE *f;
-	size_t size;
-	char *buffer;
-	struct lil_value *r;
-	if (argc < 1)
-		return NULL;
-
-	if (lil->callback[LIL_CALLBACK_SOURCE]) {
-		lil_source_callback_proc_t proc =
-			(lil_source_callback_proc_t)
-				lil->callback[LIL_CALLBACK_SOURCE];
-
-		buffer = proc(lil, lil_to_string(argv[0]));
-	} else if (lil->callback[LIL_CALLBACK_READ]) {
-		lil_read_callback_proc_t proc =
-			(lil_read_callback_proc_t)
-				lil->callback[LIL_CALLBACK_READ];
-
-		buffer = proc(lil, lil_to_string(argv[0]));
-	} else {
-		f = fopen(lil_to_string(argv[0]), "rb");
-		if (!f)
-			return NULL;
-
-		fseek(f, 0, SEEK_END);
-		size = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		buffer = malloc(size + 1);
-		fread(buffer, 1, size, f);
-		buffer[size] = 0;
-		fclose(f);
-	}
-
-	r = lil_parse(lil, buffer, 0, 0);
-	free(buffer);
-	return r;
-}
-
 static struct lil_value *fnc_lmap(struct lil *lil, size_t argc,
 				  struct lil_value **argv)
 {
@@ -3540,8 +3318,6 @@ static void register_stdcmds(struct lil *lil)
 	lil_register(lil, "expr", fnc_expr);
 	lil_register(lil, "inc", fnc_inc);
 	lil_register(lil, "dec", fnc_dec);
-	lil_register(lil, "read", fnc_read);
-	lil_register(lil, "store", fnc_store);
 	lil_register(lil, "if", fnc_if);
 	lil_register(lil, "while", fnc_while);
 	lil_register(lil, "for", fnc_for);
@@ -3561,7 +3337,6 @@ static void register_stdcmds(struct lil *lil)
 	lil_register(lil, "try", fnc_try);
 	lil_register(lil, "error", fnc_error);
 	lil_register(lil, "exit", fnc_exit);
-	lil_register(lil, "source", fnc_source);
 	lil_register(lil, "lmap", fnc_lmap);
 	lil_register(lil, "rand", fnc_rand);
 	lil_register(lil, "catcher", fnc_catcher);

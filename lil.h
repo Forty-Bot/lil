@@ -125,12 +125,6 @@ struct lil_value *lil_unused_name(struct lil *lil, const char *part);
 
 struct lil_value *lil_arg(struct lil_value **argv, size_t index);
 
-void lil_set_data(struct lil *lil, void *data);
-void *lil_get_data(struct lil *lil);
-
-char *lil_embedded(struct lil *lil, const char *code, unsigned int flags);
-void lil_freemem(void *ptr);
-
 void lil_write(struct lil *lil, const char *msg);
 
 #endif
